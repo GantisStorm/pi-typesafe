@@ -28,6 +28,11 @@ guidelines; it does not add Warden, automatic judging, or action guards.
 works headlessly when `PI_TYPESAFE_ENABLED=1` grants explicit consent. Disabling
 the tool stops future calls; probabilities are judgments, not proof or permission.
 
+OMP hosts without Pi's entry-renderer API use text results for the test/playground;
+the on-demand tool returns the same structured JSON. Verified through a real OMP
+ACP session: `typesafe_evaluate` called Command Code and returned `typesafe/jev`
+answers and token usage. Existing sessions need restarting to discover the tool.
+
 The upstream TypeSafe-specific login instructions below apply only when
 `PI_TYPESAFE_BACKEND=typesafe`.
 
