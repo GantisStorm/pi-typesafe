@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-<!-- Empty. Next release starts here. -->
+### GantisStorm fork
+
+- Backend selection now applies to the registered on-demand tool, status,
+  credentials, consent text, and test command through `PI_TYPESAFE_BACKEND`.
+- OMP hosts without Pi's entry-renderer API retain text test/playground results.
+- Added opt-in `typesafe_evaluate_files` for bounded per-file semantic screening:
+  8 explicit workspace-relative files, 16 KiB each, per-file probabilities and
+  usage, concurrency 3, and the same client/spend budget as supplied-state calls.
+- Added pre-upload rejection for unsafe paths, symlinks, hardlinks, binary or
+  oversized inputs, duplicate selections, and common credential shapes. These
+  checks are conservative screening, not complete DLP or a security sandbox.
+- Tool guidance encourages useful proactive semantic offloading while reserving
+  facts, calculations, tests, permissions, and runtime proof for deterministic tools.
 
 ## 0.8.0
 
