@@ -21,8 +21,8 @@ commands. Command Code does not use the TypeSafe login store.
 
 Install this fork from a built checkout with `omp install /absolute/path/to/checkout`.
 Restart the OMP session afterwards. BB's OMP ACP sessions load the same installed
-extension. This adds only the on-demand `typesafe_evaluate` tool and its usage
-guidelines; it does not add Warden, automatic judging, or action guards.
+extension. It adds the on-demand `typesafe_evaluate` and `typesafe_evaluate_files`
+tools and their usage guidelines; no Warden, automatic judging, or action guards.
 
 `/typesafe status` reports the selected backend and model. `/typesafe test` also
 works headlessly when `PI_TYPESAFE_ENABLED=1` grants explicit consent. Disabling
@@ -32,6 +32,33 @@ OMP hosts without Pi's entry-renderer API use text results for the test/playgrou
 the on-demand tool returns the same structured JSON. Verified through a real OMP
 ACP session: `typesafe_evaluate` called Command Code and returned `typesafe/jev`
 answers and token usage. Existing sessions need restarting to discover the tool.
+
+### File judgments without whole-file reads into model context
+
+Opt in with `PI_TYPESAFE_FILES_ENABLED=1` alongside the existing tool consent.
+`typesafe_evaluate_files` accepts explicit workspace-relative `paths`, a short
+`context`, and the same typed `questions`. It sends one file per Jev request,
+repeating those questions against `state.file.content`, `state.file.path`, and
+`state.task`. Only per-file judgments, probabilities, usage, and errors return
+to the main model; file contents are not included in results.
+
+Limits: 8 selected files, 16 KiB of UTF-8 per file, 32 questions per file,
+concurrency 3. Both tools share the same client and request/spend limits.
+Use glob/grep/LSP to shortlist candidates first. There is no glob expansion,
+whole-repo scan, command execution, silent truncation, or generative summary.
+Read the shortlisted source before editing it; ranking is not correctness proof.
+
+Preflight rejects traversal/outside-workspace paths, symlinks, hardlinks,
+credential paths, binary/oversized files, duplicates, and common credential
+shapes before any selected file is uploaded. These conservative checks can
+reject legitimate examples and are not DLP, race-proof containment, or permission
+to upload private source. Only select source approved for the configured host.
+Unsafe-input refusal is not a failed-to-detect-all-secrets guarantee.
+
+Personal OMP guidance belongs in `~/.omp/agent/RULES.md` (always-apply) and local,
+Git-ignored project `DEVELOPER.md` files. The extension's own tool instructions
+also encourage useful proactive classification, screening, and rubric judgments;
+they do not force a call on every action or intercept execution.
 
 The upstream TypeSafe-specific login instructions below apply only when
 `PI_TYPESAFE_BACKEND=typesafe`.

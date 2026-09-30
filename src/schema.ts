@@ -43,14 +43,17 @@ const question = Type.Union([
   }, { additionalProperties: false }),
 ]);
 
+/** Shared question map, reused by supplied-state and file tools without schema introspection. */
+export const evaluationQuestionsSchema = Type.Record(Type.String({ minLength: 1, maxLength: 100 }), question, {
+  minProperties: 1,
+  maxProperties: DEFAULT_MAX_QUESTIONS,
+  description: "Questions keyed by a short id: { urgent: { type: 'noul', instructions: ... } }. For the file tool, each question judges state.file.content independently.",
+});
+
 /** The JSON schema used by both the Pi tool and the programmatic interface. */
 export const evaluationSchema = Type.Object({
   state: entry("What to judge: text, or an object whose fields the questions name."),
-  questions: Type.Record(Type.String({ minLength: 1, maxLength: 100 }), question, {
-    minProperties: 1,
-    maxProperties: DEFAULT_MAX_QUESTIONS,
-    description: "Questions keyed by a short id, as an object map, not an array: { \"urgent\": { type: \"noul\", instructions: ... } }.",
-  }),
+  questions: evaluationQuestionsSchema,
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 100, description: "Jev model id, e.g. jev-latest. Omit for the default." })),
 }, { additionalProperties: false });
 

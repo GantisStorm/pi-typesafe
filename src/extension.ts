@@ -11,6 +11,7 @@ import { clearStoredApiKey, credentialsPath, keySituation, keySourceLabel } from
 import { TypeSafeIntegrationError, safeError } from "./errors.js";
 import { loginWithPrompt } from "./login.js";
 import { DEFAULT_MAX_INPUT_BYTES, evaluationSchema, normalizeEvaluationRequest, prepareEvaluationRequest } from "./schema.js";
+import { registerFileEvaluation } from "./files.js";
 
 // Select one backend consistently for requests, credentials, status, and consent.
 const backend = (process.env.PI_TYPESAFE_BACKEND ?? "typesafe") as TypeSafeBackend;
@@ -74,16 +75,19 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "typesafe_evaluate",
     label: "TypeSafe",
-    description: `Evaluate supplied state with independent Choice, Score, and Noul questions in one TypeSafe request. Each question judges the whole state, so when several items are involved, put each item in a named state field (e.g. \`reports.r1\`) and ask one question per item per dimension (e.g. \`r1_owner\`, \`r2_owner\`), naming the field in the instructions; never aggregate several items into one question. ${disclosure} Requires operator opt-in via /typesafe enable or PI_TYPESAFE_ENABLED=1. Limit: 32 questions, ${DEFAULT_MAX_INPUT_BYTES / 1024} KiB JSON, ${DEFAULT_MAX_REQUESTS} attempts per session; no retries.`,
-    promptSnippet: "Ask batched structured questions with TypeSafe (external service; operator opt-in required)",
+    description: `Proactively use Jev for useful bounded semantic classification, relevance filtering, comparisons, and rubric scoring; skip calculations, exact lookups, and obvious decisions. Evaluate supplied state with independent Choice, Score, and Noul questions in one request. Each question judges the whole state: for multiple items, give each a named state field and ask one question per item per dimension, naming the field in the instructions; never aggregate several items into one question. For shortlisted source files not yet read, consider typesafe_evaluate_files instead. ${disclosure} Requires operator opt-in via /typesafe enable or PI_TYPESAFE_ENABLED=1. Limit: 32 questions, ${DEFAULT_MAX_INPUT_BYTES / 1024} KiB JSON, ${DEFAULT_MAX_REQUESTS} attempts per session; no retries.`,
+    promptSnippet: "Proactively offload useful bounded semantic judgments to Jev; retain code and tests for facts",
     promptGuidelines: [
       // The payload shape is what models get wrong on the first call; the same sample the playground edits is the cheapest way to show it.
       // Every session pays for this line on every tool listing, so the sample stays short.
       `Request shape, all three question kinds in one call: ${JSON.stringify(sample)}`,
-      "Use typesafe_evaluate only for requested semantic judgments, not calculations or exact lookups; send only the relevant permitted data.",
+      "Use typesafe_evaluate proactively for bounded semantic classification, relevance filtering, comparisons, and rubric scoring when the answer will affect the next step. Do not wait for a separate user request for each useful judgment; skip obvious decisions, calculations, exact lookups, and calls that add no value. Send only relevant permitted data.",
       "Batch independent typesafe_evaluate questions over the same state; use code or explicit permission rules for actions, never confidence as authorization.",
       "When typesafe_evaluate judges several items, give each item a named state field and ask one question per item per dimension, naming the field in the instructions; one question over many items returns an unusable blend.",
       "Report typesafe_evaluate answers as the model's judgments with their probabilities; do not replace them with your own guesses, and say when an answer is uncertain.",
+      "Use typesafe_evaluate_files for the same semantic question over a short list of permitted source files, avoiding whole-file reads into the main model merely for screening. Narrow candidates with glob/grep/LSP first; inspect source before editing.",
+      "Do not replace runtime checks, test outcomes, arithmetic, permissions, or safety boundaries with Jev. Avoid arbitrary confidence cutoffs, adversarial instructions in state, and long chains of model judgments.",
+      "Score criteria must be an ordered scale; do not put 'unclear' above the highest severity. Use an unclear Choice option or a separate evidence-sufficiency question instead.",
     ],
     parameters: evaluationSchema,
     // Pi validates against `parameters` after this hook; the cast only names the schema's type.
@@ -113,6 +117,12 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
       if (!result.details?.answers) return new Text(result.content.filter(part => part.type === "text").map(part => part.text).join("\n"), 0, 0);
       return new Text(format(result.details, expanded), 0, 0);
     },
+  });
+
+  registerFileEvaluation(pi, {
+    enabled: () => enabled && process.env.PI_TYPESAFE_FILES_ENABLED === "1",
+    client: getClient,
+    host: backendHost(backend),
   });
 
   const actions = ["login", "logout", "setup", "status", "enable", "disable", "test", "playground"];
