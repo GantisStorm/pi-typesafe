@@ -67,7 +67,9 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
     if (enabled && auth.level === "error") callOut(ctx, `start:${auth.level}`, `TypeSafe is enabled but judgments are skipped. ${auth.text}`);
   });
 
-  pi.registerEntryRenderer<Evaluation<Questions>>("typesafe-result", (entry, { expanded }) => new Text(entry.data ? format(entry.data, expanded) : "TypeSafe · no result", 0, 0));
+  if (typeof pi.registerEntryRenderer === "function") {
+    pi.registerEntryRenderer<Evaluation<Questions>>("typesafe-result", (entry, { expanded }) => new Text(entry.data ? format(entry.data, expanded) : "TypeSafe · no result", 0, 0));
+  }
 
   pi.registerTool({
     name: "typesafe_evaluate",
@@ -204,6 +206,7 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
         const result = await getClient().evaluate(validated);
         // Playground results stay out of LLM context; the agent tool returns its own results normally.
         pi.appendEntry("typesafe-result", result);
+        if (typeof pi.registerEntryRenderer !== "function") report(format(result, true));
       } catch (error) {
         report(safeError(error).message, "error");
       }
