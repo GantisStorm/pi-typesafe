@@ -1,5 +1,36 @@
 # pi-typesafe
 
+## GantisStorm fork: on-demand Jev through Command Code
+
+This fork adds `PI_TYPESAFE_BACKEND=commandcode` to the registered tool and
+`/typesafe` commands. Requests, status, consent text, and credential checks all
+use the selected backend. The default remains `typesafe`; `openrouter` is also
+accepted. Invalid backend names fail explicitly.
+
+For OMP, configure these variables securely in `~/.omp/agent/.env`:
+
+```dotenv
+PI_TYPESAFE_BACKEND=commandcode
+PI_TYPESAFE_ENABLED=1
+```
+
+The selected backend reads `COMMANDCODE_API_KEY` and calls
+`https://api.commandcode.ai/provider/v1/systemone` with model `typesafe/jev`.
+Reuse your existing Command Code credential; never commit it or paste it into
+commands. Command Code does not use the TypeSafe login store.
+
+Install this fork from a built checkout with `omp install /absolute/path/to/checkout`.
+Restart the OMP session afterwards. BB's OMP ACP sessions load the same installed
+extension. This adds only the on-demand `typesafe_evaluate` tool and its usage
+guidelines; it does not add Warden, automatic judging, or action guards.
+
+`/typesafe status` reports the selected backend and model. `/typesafe test` also
+works headlessly when `PI_TYPESAFE_ENABLED=1` grants explicit consent. Disabling
+the tool stops future calls; probabilities are judgments, not proof or permission.
+
+The upstream TypeSafe-specific login instructions below apply only when
+`PI_TYPESAFE_BACKEND=typesafe`.
+
 [![CI](https://github.com/DevMortimer/pi-typesafe/actions/workflows/ci.yml/badge.svg)](https://github.com/DevMortimer/pi-typesafe/actions/workflows/ci.yml)
 
 [Jev](https://typesafe.ai) inside [Pi](https://pi.dev). Jev is TypeSafe's judgment model: send it some state and typed questions and it returns probabilities instead of prose, in well under a second, for a fraction of a cent. This package gives Pi three things built on it:

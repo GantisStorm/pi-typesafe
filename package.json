@@ -7,10 +7,10 @@
   "author": "Ryan Gapac",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DevMortimer/pi-typesafe.git"
+    "url": "git+https://github.com/GantisStorm/pi-typesafe.git"
   },
-  "homepage": "https://github.com/DevMortimer/pi-typesafe#readme",
-  "bugs": "https://github.com/DevMortimer/pi-typesafe/issues",
+  "homepage": "https://github.com/GantisStorm/pi-typesafe#readme",
+  "bugs": "https://github.com/GantisStorm/pi-typesafe/issues",
   "funding": "https://github.com/sponsors/DevMortimer",
   "keywords": [
     "pi-package",
