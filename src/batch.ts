@@ -1,7 +1,7 @@
 import type { Questions, SystemOneRequest, Usage } from "@typesafe-ai/sdk";
 import type { Evaluation, TypeSafe } from "./client.js";
 import { TypeSafeIntegrationError } from "./errors.js";
-import { DEFAULT_MAX_QUESTIONS, prepareEvaluationRequest } from "./schema.js";
+import { DEFAULT_MAX_QUESTIONS } from "./schema.js";
 
 /** Default number of requests in flight. TypeSafe answers in isolation, so a small pool is enough. */
 export const DEFAULT_CONCURRENCY = 4;
@@ -12,7 +12,7 @@ export type Settled<T> =
   | { readonly ok: false; readonly index: number; readonly error: unknown; readonly skipped: boolean };
 
 export interface FanOutOptions {
-  /** Requests in flight at once. Default: DEFAULT_CONCURRENCY. */
+  /** Requests in flight at once. Default: DEFAULT_CONCURRENCY. A non-finite value uses the default. */
   concurrency?: number;
   /** Stops starting new work once aborted; in-flight work still finishes. */
   signal?: AbortSignal;
@@ -25,7 +25,10 @@ export interface FanOutOptions {
  * settled result. This is the pool the client's batching methods use, exported so script authors stop hand-rolling one.
  */
 export async function fanOut<I, O>(items: readonly I[], worker: (item: I, index: number) => Promise<O>, options: FanOutOptions = {}): Promise<Settled<O>[]> {
-  const concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY));
+  // A non-finite concurrency (NaN out of a computed setting) would start no worker at all and report every item as
+  // skipped; fall back to the default instead.
+  const requested = options.concurrency ?? DEFAULT_CONCURRENCY;
+  const concurrency = Math.max(1, Math.floor(Number.isFinite(requested) ? requested : DEFAULT_CONCURRENCY));
   const results = new Array<Settled<O> | undefined>(items.length);
   let next = 0;
   let stopped = false;
@@ -41,7 +44,11 @@ export async function fanOut<I, O>(items: readonly I[], worker: (item: I, index:
         results[index] = { ok: true, index, value: await worker(items[index] as I, index) };
       } catch (error) {
         results[index] = { ok: false, index, error, skipped: false };
-        if (options.stopOn?.(error)) stopped = true;
+        // A stop rule that throws must not reject this never-throwing pool, and an unevaluable rule stops: it exists to
+        // guard against more spending.
+        let stop = true;
+        try { stop = options.stopOn?.(error) === true; } catch { stop = true; }
+        if (stop) stopped = true;
       }
     }
   };
@@ -92,7 +99,11 @@ function summarize<Q extends Questions>(results: readonly Settled<Evaluation<Q>>
       continue;
     }
     succeeded++;
-    Object.assign(answers, result.value.answers);
+    // defineProperty, not assignment: an id such as `__proto__` must land as an ordinary own key, and a repeated id
+    // still keeps the last answer without moving in the map.
+    for (const [id, answer] of Object.entries(result.value.answers)) {
+      Object.defineProperty(answers, id, { value: answer, enumerable: true, writable: true, configurable: true });
+    }
     inputTokens += result.value.usage.input_tokens;
     outputTokens += result.value.usage.output_tokens;
     model ??= result.value.model;
@@ -125,7 +136,10 @@ export async function evaluateMany<Q extends Questions>(
   options: BatchOptions = {},
 ): Promise<BatchEvaluation<Q>> {
   const start = performance.now();
-  const results = await fanOut(requests, (request) => client.evaluate(prepareEvaluationRequest(request) as SystemOneRequest<Q>, options.signal ? { signal: options.signal } : {}), {
+  // `client.evaluate` is the one admission seam: it normalizes, validates, and applies the client's own byte budget,
+  // and its validation error settles here instead of throwing. Admitting again here would use the default budget, so
+  // the same request would be accepted by evaluate() and refused by the batch.
+  const results = await fanOut(requests, (request) => client.evaluate(request, options.signal ? { signal: options.signal } : {}), {
     ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     stopOn: stopsBatch,
@@ -143,7 +157,9 @@ export function chunkEvaluationRequest(
   request: SystemOneRequest<Questions>,
   options: { maxQuestions?: number } = {},
 ): SystemOneRequest<Questions>[] {
-  const limit = Math.max(1, Math.floor(options.maxQuestions ?? DEFAULT_MAX_QUESTIONS));
+  // As in fanOut: a non-finite limit must not silently drop every question into a zero-question chunk.
+  const requested = options.maxQuestions ?? DEFAULT_MAX_QUESTIONS;
+  const limit = Math.max(1, Math.floor(Number.isFinite(requested) ? requested : DEFAULT_MAX_QUESTIONS));
   const questions = request.questions as Record<string, unknown>;
   const entries = questions && typeof questions === "object" && !Array.isArray(questions) ? Object.entries(questions) : undefined;
   // Anything that is not a plain question map, or that already fits, is one chunk and is validated later.

@@ -142,3 +142,17 @@ test("replay reports scorer failures with the caller's own message", async () =>
   const nonError = await replay([{ id: "boom", label: false, data: "case" }], async () => { throw "not an error"; });
   assert.equal(nonError[0]?.error, "The scorer failed.");
 });
+
+test("a degenerate threshold limit still yields usable thresholds", () => {
+  const samples = [sample(0.2, true), sample(0.5, true), sample(0.8, false)];
+  assert.deepEqual(defaultThresholds(samples, 1), [0.2]);
+  assert.deepEqual(defaultThresholds(samples, 2), [0.2, 0.8]);
+  assert.deepEqual(defaultThresholds(samples, 64), [0.2, 0.5, 0.8]);
+  // Below one: the smallest usable grid. Not a number: the default limit, as in the batch options.
+  for (const limit of [0, -2]) assert.deepEqual(defaultThresholds(samples, limit), [0.2]);
+  assert.deepEqual(defaultThresholds(samples, NaN), [0.2, 0.5, 0.8]);
+  // Those thresholds feed straight into formatting, which used to throw on a NaN threshold.
+  for (const thresholds of [defaultThresholds(samples, 1), defaultThresholds(samples, 0), defaultThresholds(samples, NaN)]) {
+    assert.doesNotThrow(() => formatCalibration(calibrate("degenerate", samples, { thresholds })));
+  }
+});

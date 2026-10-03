@@ -54,11 +54,29 @@ test("the default byte budget is 64 KiB", () => {
   assert.doesNotThrow(() => prepareEvaluationRequest(oversized, { maxInputBytes: DEFAULT_MAX_INPUT_BYTES * 2 }));
 });
 
+test("a non-finite byte budget is refused instead of being ignored", () => {
+  const oversized = { state: "x".repeat(DEFAULT_MAX_INPUT_BYTES), questions: { yes: { type: "noul", instructions: "?" } } };
+  for (const maxInputBytes of [NaN, Infinity, 0, -1, 1.5]) {
+    assert.throws(() => prepareEvaluationRequest(oversized, { maxInputBytes }), hasCode("configuration"));
+  }
+});
+
 test("admission still rejects non-JSON state", () => {
   const cycle: Record<string, unknown> = {};
   cycle.self = cycle;
   assert.throws(() => prepareEvaluationRequest({ state: cycle, questions: { yes: { type: "noul", instructions: "?" } } }), hasCode("validation"));
   assert.throws(() => prepareEvaluationRequest({ state: { n: NaN }, questions: { yes: { type: "noul", instructions: "?" } } }), hasCode("validation"));
+});
+
+test("a question id that collides with Object.prototype stays an ordinary key", () => {
+  // Built through JSON.parse so `__proto__` arrives as a real own property, the way a model's request does.
+  const request: unknown = JSON.parse('{"state":"synthetic","questions":{"__proto__":{"type":"noul","instructions":"?"},"ok":{"type":"noul","instructions":"?"}}}');
+  const normalized = normalizeEvaluationRequest(request) as { questions: Record<string, unknown> };
+  assert.equal(Object.getPrototypeOf(normalized.questions), Object.prototype);
+  const prepared = prepareEvaluationRequest(request);
+  assert.deepEqual(Object.keys(prepared.questions), ["__proto__", "ok"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(prepared.questions, "__proto__"), true);
+  assert.equal(Object.getPrototypeOf(prepared.questions), Object.prototype);
 });
 
 test("every field the agent authors carries a description, so a bare union is not its only guidance", () => {

@@ -62,6 +62,23 @@ The TypeSafe backend takes its key from `TYPESAFE_API_KEY`, then the `/typesafe 
 
 `prepareEvaluationRequest(value, { maxInputBytes })` is the one admission rule, used by the tool, the playground, and `evaluate`. It normalizes the near-miss aliases a model produces (`options` / `levels` / `choices` for `criteria`, a string Noul criterion, a label array for a Choice), validates the schema and JSON-safety, then enforces the byte budget. `DEFAULT_MAX_INPUT_BYTES`, `DEFAULT_MAX_QUESTIONS`, and `DEFAULT_MAX_REQUESTS` hold the shared defaults.
 
+## Guarded source admission
+
+`readJudgmentFiles(cwd, paths, signal?)` admits all selected files before returning
+their `{ path, content }` values. It does not upload, execute, or judge anything.
+Callers must obtain source-upload permission and enforce consent before calling
+it. The same preflight used by the Pi file tool rejects outside-workspace paths,
+symlinks, hardlinks, protected paths, absent or unreadable selections, invalid
+UTF-8, binary/oversized inputs, duplicates, and common credential shapes. Limits
+are eight files and 16 KiB each.
+These checks are conservative screening, not DLP or a security sandbox.
+
+`fileEvaluationSchema` exposes the file-tool input schema for other adapters.
+After admission, prepare every per-file request with `prepareEvaluationRequest`
+before starting a batch, and share one client with supplied-state judgments so
+request/spend limits cannot be bypassed by choosing another tool.
+
+
 ## Batching
 
 `evaluate` is one request: up to 32 questions about one state. Both batching calls preserve input order, bound concurrency (`concurrency`, default 4), never throw, and stop submitting once a `budget` or cancellation failure appears.
@@ -73,7 +90,7 @@ The TypeSafe backend takes its key from `TYPESAFE_API_KEY`, then the `/typesafe 
 | `chunkEvaluationRequest(request, { maxQuestions })` | The splitter alone; a pure function, no validation |
 | `fanOut(items, worker, { concurrency, signal, stopOn })` | The pool underneath, for your own work |
 
-Every item comes back as `{ ok: true, index, value }` or `{ ok: false, index, error, skipped }`; `skipped` marks work that was never submitted.
+Every item comes back as `{ ok: true, index, value }` or `{ ok: false, index, error, skipped }`; `skipped` marks work that was never submitted. Each request is admitted by `evaluate`, so the client's own `maxInputBytes` applies and an invalid request is one settled failure rather than a thrown error.
 
 ## Usage and spend
 
@@ -87,7 +104,7 @@ Day caps live in `~/.pi/agent/pi-typesafe/usage.json` (owner-only, atomic, best-
 | `maxInputTokensPerDay` | `PI_TYPESAFE_MAX_INPUT_TOKENS_PER_DAY` | input tokens |
 | `maxUsdPerDay` | `PI_TYPESAFE_MAX_USD_PER_DAY` | estimated spend |
 
-The environment may lower an explicit cap, never raise it. A reached cap raises a `budget` error that names the cap, the amount used, and the day, before anything is submitted. Cost is estimated from input tokens only, because output is free.
+The environment may lower an explicit cap, never raise it. A reached cap raises a `budget` error that names the cap, the amount used, and the day, before anything is submitted. Cost is estimated from input tokens only, because output is free. `getSpend().blocked` names the cap that stops the next call — `requestsPerSession` for the client's own attempt cap, otherwise the daily cap a ledger counted.
 
 `openUsageLedger(options)`, `usagePath()`, `estimateUsd(tokens, usdPerMTok)`, `capsFromEnvironment(env)`, and `mergeCaps(explicit, environment)` expose the same arithmetic for your own display.
 
@@ -131,6 +148,8 @@ console.log(formatCalibration(calibrate("action guard", samplesOf(results).sampl
 | `replay(cases, score, options)`, `samplesOf(results)` | Run labelled cases through any scorer with bounded concurrency, keep per-case failures, then extract the scored samples |
 
 `replay` stops on a `budget` failure like the batching calls, and reports each failure with the scorer's own message unless you pass `describeError`.
+
+`pi-typesafe/calibrate` is a separate entry point for consumers to import — it is not called by the extension itself, and nothing in the extension or the rest of this package uses it at runtime.
 
 ## Login helpers: `pi-typesafe/ui`
 

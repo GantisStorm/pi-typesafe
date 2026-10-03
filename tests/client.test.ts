@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { createTypeSafe, choice, noul, score, normalizeEvaluationRequest, parseEvaluationRequest, authState, clearAuthState, TypeSafeIntegrationError } from "../src/index.js";
 import { safeError } from "../src/errors.js";
+import { openUsageLedger } from "../src/usage.js";
 import { APIError } from "@typesafe-ai/sdk";
 import type { Questions, SystemOneRequest } from "../src/index.js";
 
@@ -495,5 +496,37 @@ test("key resolution picks the right env var per backend", () => {
   } finally {
     if (originalKey === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = originalKey;
     if (originalOR === undefined) delete process.env.OPENROUTER_API_KEY; else process.env.OPENROUTER_API_KEY = originalOR;
+  }
+});
+
+test("a reached session cap is reported by getSpend instead of hiding behind evaluate's refusal", async () => {
+  const client = createTypeSafe({ apiKey: "test-key", maxRequests: 1, fetch: async () => responseFor(sample().questions) });
+  await client.evaluate(sample());
+  const spend = client.getSpend();
+  assert.equal(spend.blocked?.cap, "requestsPerSession");
+  assert.equal(spend.blocked?.limit, 1);
+  assert.equal(spend.blocked?.used, 1);
+  assert.match(String(spend.blocked?.day), /^\d{4}-\d{2}-\d{2}$/);
+  await assert.rejects(client.evaluate(sample()), hasCode("budget"));
+});
+
+test("tokens billed for a response that fails validation still reach the day counters", async () => {
+  const ledger = openUsageLedger({ path: join(mkdtempSync(join(tmpdir(), "pi-typesafe-billed-")), "usage.json") });
+  const client = createTypeSafe({ apiKey: "test-key", maxInputTokensPerDay: 100, ledger, fetch: async () => Response.json({
+    model: "jev-test",
+    answers: { yes: { type: "noul", noul: 5 } },
+    usage: { input_tokens: 10_000, output_tokens: 0 },
+  }) });
+  await assert.rejects(client.evaluate(sample()), hasCode("response"));
+  assert.equal(client.getUsage().requestsFailed, 1);
+  assert.equal(client.getUsage().inputTokens, 10_000);
+  assert.equal(ledger.today().inputTokens, 10_000);
+  // The token cap now sees what the provider billed, so the next attempt stops before it is submitted.
+  await assert.rejects(client.evaluate(sample()), hasCode("budget"));
+});
+
+test("a non-string apiKey is a configuration error, not a TypeError", () => {
+  for (const apiKey of [42, null, {}, ["k"]]) {
+    assert.throws(() => createTypeSafe({ apiKey: apiKey as never }), hasCode("configuration"));
   }
 });

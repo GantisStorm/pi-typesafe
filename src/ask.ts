@@ -30,7 +30,12 @@ export type AskAnswer<Q extends Questions> =
  * share `prepareEvaluationRequest`, so what one accepts the other accepts.
  */
 export async function ask<Q extends Questions>(judge: Judge, request: SystemOneRequest<Q>, options: AskOptions = {}): Promise<AskAnswer<Q>> {
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+  // AbortSignal.timeout throws a RangeError outside this function's own catch, which would break the never-throws rule.
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 4_294_967_295) {
+    return { ok: false, error: "timeoutMs must be an integer of 1 to 4294967295 milliseconds.", errorCode: "configuration" };
+  }
+  const timeout = AbortSignal.timeout(timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
   try {
     const result = await judge.evaluate(request, { signal });

@@ -117,9 +117,11 @@ export function normalizeEvaluationRequest(value: unknown): unknown {
   const request = value as Record<string, unknown>;
   const questions = request.questions;
   if (!questions || typeof questions !== "object" || Array.isArray(questions)) return value;
-  const normalized: Record<string, unknown> = {};
+  // Object.fromEntries defines own properties, so an id such as `__proto__` stays an ordinary question key instead of
+  // rewriting the map's prototype the way an index assignment would.
+  const entries: Array<[string, unknown]> = [];
   for (const [id, question] of Object.entries(questions as Record<string, unknown>)) {
-    if (!question || typeof question !== "object" || Array.isArray(question)) { normalized[id] = question; continue; }
+    if (!question || typeof question !== "object" || Array.isArray(question)) { entries.push([id, question]); continue; }
     const { options, levels, choices, ...rest } = question as Record<string, unknown>;
     const item: Record<string, unknown> = { ...rest };
     if (item.criteria === undefined) {
@@ -132,9 +134,9 @@ export function normalizeEvaluationRequest(value: unknown): unknown {
     if (item.type === "noul" && typeof item.criteria === "string") {
       item.criteria = { true: item.criteria };
     }
-    normalized[id] = item;
+    entries.push([id, item]);
   }
-  return { ...request, questions: normalized };
+  return { ...request, questions: Object.fromEntries(entries) };
 }
 
 export interface PrepareEvaluationOptions {
@@ -144,6 +146,10 @@ export interface PrepareEvaluationOptions {
 
 /** One byte rule for every limit check: measure the serialized request and name the configured limit. */
 export function assertWithinByteLimit(text: string, maxInputBytes: number): void {
+  // A non-finite limit makes every comparison false, so the budget would silently disappear.
+  if (!Number.isSafeInteger(maxInputBytes) || maxInputBytes <= 0) {
+    throw new TypeSafeIntegrationError("configuration", "maxInputBytes must be a positive safe integer.");
+  }
   if (Buffer.byteLength(text, "utf8") > maxInputBytes) {
     throw new TypeSafeIntegrationError("validation", `Evaluation exceeds the ${maxInputBytes}-byte input limit.`);
   }

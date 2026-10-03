@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { Extension, RegisteredCommand, RegisteredTool } from "@earendil-works/pi-coding-agent";
+import type { Extension, ExtensionAPI, RegisteredCommand, RegisteredTool } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import typesafeExtension from "../src/extension.js";
 
 let temporary: string;
 let extension: Extension;
@@ -254,4 +256,78 @@ test("the registered tool admits the same near-miss aliases as the library", asy
   ]);
   assert.equal(networkCalls, before + 1);
   assert.equal(result.details.answers.yes.noul, 0.9);
+});
+
+test("a blank backend variable loads the default backend while an unknown name still fails", () => {
+  // The backend is chosen once, at module load, so this needs a fresh process rather than the shared loader: a static
+  // import cannot reach into a child process, and the child's own import is exactly the boundary under test.
+  const source = `await import(${JSON.stringify(resolve("src/extension.ts"))}); process.stdout.write("loaded");`;
+  const launch = (backend: string) => spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], {
+    cwd: process.cwd(),
+    env: { ...process.env, PI_TYPESAFE_BACKEND: backend },
+    encoding: "utf8",
+  });
+  for (const blank of ["", "   "]) {
+    const result = launch(blank);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "loaded");
+  }
+  const invalid = launch("typesafe-v2");
+  assert.notEqual(invalid.status, 0);
+  assert.match(String(invalid.stderr), /Unknown judgment backend/);
+});
+
+test("the headless command surface reports through the message channel and stays closed", async () => {
+  const said: string[] = [];
+  const registered = new Map<string, { name?: string; handler?: (...args: unknown[]) => Promise<unknown> }>();
+  const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>();
+  const savedKey = process.env.TYPESAFE_API_KEY;
+  const savedEnabledNow = process.env.PI_TYPESAFE_ENABLED;
+  const savedFetch = globalThis.fetch;
+  process.env.TYPESAFE_API_KEY = "offline-test-key";
+  try {
+    // No registerEntryRenderer: this is the OMP host shape the fork supports, where results come back as text.
+    const stub = {
+      on: (event: string, handler: (...args: unknown[]) => Promise<unknown>) => { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
+      sendMessage: (message: { content?: string }) => { said.push(String(message.content)); },
+      appendEntry: () => {},
+      registerTool: (definition: { name?: string }) => { registered.set(String(definition.name), definition); },
+      registerCommand: (name: string, definition: { handler?: (...args: unknown[]) => Promise<unknown> }) => { registered.set(name, definition); },
+    };
+    globalThis.fetch = async (_input, init) => {
+      networkCalls++;
+      const request = JSON.parse(String(init?.body)) as { questions: Record<string, { type: string; criteria?: unknown }> };
+      const answers = Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+        if (question.type === "noul") return [id, { type: "noul", noul: 0.9 }];
+        if (question.type === "choice") {
+          const labels = Object.keys(question.criteria as Record<string, unknown>);
+          return [id, { type: "choice", choice: labels[0], confidence: 0.9, probabilities: Object.fromEntries(labels.map((label, index) => [label, index === 0 ? 0.9 : 0.05])) }];
+        }
+        const levels = question.criteria as string[];
+        return [id, { type: "score", score: 0, confidence: 0.9, legend: levels.join(" | "), probabilities: Object.fromEntries(levels.map((_, index) => [String(index), index === 0 ? 0.9 : 0.05])) }];
+      }));
+      return Response.json({ model: "jev-test", answers, usage: { input_tokens: 5, output_tokens: 0 } });
+    };
+    typesafeExtension(stub as unknown as ExtensionAPI);
+    const handler = registered.get("typesafe")?.handler;
+    assert.ok(handler);
+    const headless = { hasUI: false };
+    process.env.PI_TYPESAFE_ENABLED = "1";
+    for (const start of handlers.get("session_start") ?? []) await Reflect.apply(start, null, [{ reason: "startup" }, headless]);
+    const before = networkCalls;
+    await Reflect.apply(handler, null, ["test", headless]);
+    assert.equal(networkCalls, before + 1);
+    assert.ok(said.at(-1)?.includes("P(yes)"), "a host without the entry renderer must still get the result as text");
+    await Reflect.apply(handler, null, ["enable", headless]);
+    assert.ok(said.at(-1)?.includes("needs interactive Pi"));
+    await Reflect.apply(handler, null, ["disable", headless]);
+    assert.ok(said.at(-1)?.includes("disabled"));
+    await Reflect.apply(handler, null, ["test", headless]);
+    assert.ok(said.at(-1)?.includes("needs interactive Pi"));
+    assert.equal(networkCalls, before + 1);
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = savedKey;
+    if (savedEnabledNow === undefined) delete process.env.PI_TYPESAFE_ENABLED; else process.env.PI_TYPESAFE_ENABLED = savedEnabledNow;
+  }
 });

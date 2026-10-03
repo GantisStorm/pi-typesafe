@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readJudgmentFiles, registerFileEvaluation } from "../src/files.js";
+import { TypeSafeIntegrationError } from "../src/errors.js";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TypeSafe } from "../src/client.js";
 
@@ -97,5 +99,61 @@ test("an unsafe later file prevents all provider submissions; disabled consent p
     enabled = false;
     await assert.rejects(execute("id", { ...params, paths: ["does-not-exist.ts"] }, undefined, undefined, { cwd: root }), /disabled/);
     assert.equal(submissions, 0);
+  });
+});
+
+test("an unreadable selection is a classified rejection that never leaks the resolved path", async () => {
+  await workspace(async root => {
+    await writeFile(join(root, "a.ts"), "export const a = 1;");
+    await mkdir(join(root, "dir.ts"));
+    const failed = (error: unknown) => error instanceof TypeSafeIntegrationError && error.code === "validation" && !error.message.includes(root);
+    // Missing leaf, a directory wearing a source extension, and a component that is already a file.
+    await assert.rejects(readJudgmentFiles(root, ["missing.ts"]), failed);
+    await assert.rejects(readJudgmentFiles(root, ["dir.ts"]), failed);
+    await assert.rejects(readJudgmentFiles(root, ["a.ts/child.ts"]), failed);
+    // A working directory that no longer exists fails as a rejection too, not a raw filesystem error.
+    await assert.rejects(readJudgmentFiles(join(root, "gone"), ["a.ts"]), failed);
+  });
+});
+
+test("the file tool admits the near-miss aliases Pi's own validation would reject", () => {
+  let definition = { execute: async (..._args: unknown[]): Promise<unknown> => { throw new Error("not registered"); }, prepareArguments: undefined as ((args: unknown) => unknown) | undefined };
+  const pi = { registerTool(value: typeof definition) { definition = value; } } as unknown as ExtensionAPI;
+  registerFileEvaluation(pi, { enabled: () => true, client: () => ({}) as TypeSafe, host: "api.example.com" });
+  assert.equal(typeof definition.prepareArguments, "function");
+  assert.deepEqual(definition.prepareArguments?.({
+    paths: ["a.ts"],
+    questions: { team: { type: "choice", options: { billing: "Charges and payments", other: null } } },
+  }), {
+    paths: ["a.ts"],
+    questions: { team: { type: "choice", criteria: { billing: "Charges and payments", other: null } } },
+  });
+});
+
+test("the per-file limit is the documented 16 KiB boundary", async () => {
+  await workspace(async root => {
+    await writeFile(join(root, "exact.ts"), "x".repeat(16_384));
+    await writeFile(join(root, "over.ts"), "x".repeat(16_385));
+    const [exact] = await readJudgmentFiles(root, ["exact.ts"]);
+    assert.equal(exact?.content.length, 16_384);
+    await assert.rejects(readJudgmentFiles(root, ["over.ts"]), /exceeds/);
+  });
+});
+
+// macOS volumes are case-insensitive by default, so two spellings there reach one file and both would be uploaded.
+const caseInsensitiveVolume = (() => {
+  const root = mkdtempSync(join(tmpdir(), "pi-typesafe-case-"));
+  try {
+    writeFileSync(join(root, "probe.ts"), "");
+    return existsSync(join(root, "PROBE.TS"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+})();
+
+test("one file under two spellings is still a duplicate", { skip: !caseInsensitiveVolume }, async () => {
+  await workspace(async root => {
+    await writeFile(join(root, "src.ts"), "export const a = 1;\n");
+    await assert.rejects(readJudgmentFiles(root, ["src.ts", "SRC.TS"]), /Duplicate/);
   });
 });

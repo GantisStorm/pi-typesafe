@@ -8,7 +8,7 @@ import { evaluateAll, evaluateMany } from "./batch.js";
 import { keySituation } from "./credentials.js";
 import { TypeSafeIntegrationError, safeError } from "./errors.js";
 import { DEFAULT_MAX_INPUT_BYTES, assertWithinByteLimit, prepareEvaluationRequest } from "./schema.js";
-import { DEFAULT_USD_PER_MTOK, capsFromEnvironment, estimateUsd, mergeCaps, openUsageLedger } from "./usage.js";
+import { DEFAULT_USD_PER_MTOK, capsFromEnvironment, estimateUsd, localDay, mergeCaps, openUsageLedger } from "./usage.js";
 import type { BlockedCap, SpendCaps, UsageLedger, UsageReport } from "./usage.js";
 
 export { backendHost, resolveBackend, DECISIONS_BACKENDS, DEFAULT_BACKEND } from "./backends.js";
@@ -163,6 +163,7 @@ function validResult<Q extends Questions>(result: SystemOneResult<Q>, questions:
 }
 
 const CAP_LABELS: Record<BlockedCap["cap"], string> = {
+  requestsPerSession: "session request cap",
   requestsPerDay: "daily request cap",
   inputTokensPerDay: "daily input-token cap",
   usdPerDay: "daily spend cap",
@@ -181,7 +182,11 @@ function capsDescription(caps: SpendCaps): string {
 /** A bounded, server-side TypeSafe client independent of Pi's runtime. */
 export function createTypeSafe(options: TypeSafeOptions = {}): TypeSafe {
   const backend: ResolvedBackend = resolveBackend(options.backend);
-  let apiKey = options.apiKey?.trim();
+  const providedKey = options.apiKey;
+  if (providedKey !== undefined && typeof providedKey !== "string") {
+    throw new TypeSafeIntegrationError("configuration", "apiKey must be a string.");
+  }
+  let apiKey = providedKey?.trim();
   const baseURL = backend.host;
   // Only a registry backend maps ids; a caller-supplied endpoint's model is sent as the caller wrote it.
   const mapModel = (model: string): string => (backend.name === undefined ? model : backendModelId(backend.name, model));
@@ -231,7 +236,11 @@ export function createTypeSafe(options: TypeSafeOptions = {}): TypeSafe {
   let lastFailureRecorded: string | undefined;
 
   const snapshot = (): UsageSnapshot => ({ ...usage, estimatedUsd: estimateUsd(usage.inputTokens, usdPerMTok) });
-  const blocked = (): BlockedCap | undefined => (usage.requestsStarted >= maxRequests ? undefined : ledger.blocked(caps));
+  // The session cap is checked before the day caps in evaluate(), so it is the one reported when both are reached:
+  // returning nothing here would contradict the `budget` error the very next call raises.
+  const blocked = (): BlockedCap | undefined => (usage.requestsStarted >= maxRequests
+    ? { cap: "requestsPerSession", limit: maxRequests, used: usage.requestsStarted, day: localDay() }
+    : ledger.blocked(caps));
 
   const typesafe: TypeSafe = {
     getUsage: snapshot,
@@ -278,13 +287,20 @@ export function createTypeSafe(options: TypeSafeOptions = {}): TypeSafe {
       usage.requestsStarted += 1;
       ledger.recordStart();
       const start = performance.now();
+      // A response is billed whether or not its shape survives the gate below, so its tokens are captured first; a
+      // transport failure leaves them at zero because the assignment never runs.
+      let billed = { input: 0, output: 0 };
       try {
         const result = await client.systemOne(request, callOptions);
+        billed = {
+          input: Number.isSafeInteger(result?.usage?.input_tokens) && result.usage.input_tokens > 0 ? result.usage.input_tokens : 0,
+          output: Number.isSafeInteger(result?.usage?.output_tokens) && result.usage.output_tokens > 0 ? result.usage.output_tokens : 0,
+        };
         if (!validResult(result, request.questions)) throw new TypeSafeIntegrationError("response", "TypeSafe returned an unexpected answer or usage format.");
         usage.requestsSucceeded += 1;
-        usage.inputTokens += result.usage.input_tokens;
-        usage.outputTokens += result.usage.output_tokens;
-        ledger.recordSuccess(result.usage.input_tokens, result.usage.output_tokens);
+        usage.inputTokens += billed.input;
+        usage.outputTokens += billed.output;
+        ledger.recordSuccess(billed.input, billed.output);
         if (!verificationRecorded) {
           verificationRecorded = true;
           recordAuthVerified();
@@ -294,7 +310,9 @@ export function createTypeSafe(options: TypeSafeOptions = {}): TypeSafe {
         const safe = safeError(error, backend);
         // The request was submitted, so it counts even when it fails; the reason stays visible in `authState()`.
         usage.requestsFailed += 1;
-        ledger.recordFailure();
+        usage.inputTokens += billed.input;
+        usage.outputTokens += billed.output;
+        ledger.recordFailure(billed.input, billed.output);
         const fingerprint = `${safe.code}:${safe.status ?? ""}:${safe.message}`;
         if (lastFailureRecorded !== fingerprint) {
           lastFailureRecorded = fingerprint;

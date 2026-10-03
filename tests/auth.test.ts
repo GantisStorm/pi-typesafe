@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -138,4 +138,25 @@ test("a corrupt auth record is ignored and clearing forgets both facts", () => {
   const cleared = authState();
   assert.equal(cleared.verified, false);
   assert.equal(cleared.lastFailure, undefined);
+});
+
+test("an unwritable store directory is tolerated, and the previous auth record survives whole", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const dir = join(workspace, "pi-typesafe");
+  recordAuthVerified(new Date("2026-02-01T00:00:00.000Z"));
+  assert.equal(statSync(authStatePath()).mode & 0o777, 0o600);
+  const before = readFileSync(authStatePath(), "utf8");
+  chmodSync(dir, 0o500);
+  try {
+    // Both recorders must swallow this: an unwritable auth record never changes how a request behaves.
+    recordAuthVerified(new Date("2026-02-02T00:00:00.000Z"));
+    recordAuthFailure(new TypeSafeIntegrationError("timeout", "TypeSafe request timed out"), new Date("2026-02-02T00:05:00.000Z"));
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  assert.equal(readFileSync(authStatePath(), "utf8"), before, "a failed write must not truncate or half-write the record");
+  assert.deepEqual(readdirSync(dir).filter(name => name.endsWith(".tmp")), []);
+  assert.equal(authState().verifiedAt, "2026-02-01T00:00:00.000Z");
+  recordAuthVerified(new Date("2026-02-03T00:00:00.000Z"));
+  assert.equal(authState().verifiedAt, "2026-02-03T00:00:00.000Z");
+  assert.equal(statSync(authStatePath()).mode & 0o777, 0o600);
 });

@@ -23,6 +23,8 @@ export {
   DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_QUESTIONS, evaluationSchema, normalizeEvaluationRequest, parseEvaluationRequest, prepareEvaluationRequest,
 } from "./schema.js";
 export type { PrepareEvaluationOptions } from "./schema.js";
+export { readJudgmentFiles, fileEvaluationSchema } from "./files.js";
+export type { FileState } from "./files.js";
 export { choice, noul, score } from "@typesafe-ai/sdk";
 export type {
   Questions, Question, SystemOneRequest, SystemOneResult, EntryType, JsonValue,

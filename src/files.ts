@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Questions } from "@typesafe-ai/sdk";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import type { TypeSafe } from "./client.js";
 import { safeError, TypeSafeIntegrationError } from "./errors.js";
-import { evaluationQuestionsSchema, prepareEvaluationRequest } from "./schema.js";
+import { evaluationQuestionsSchema, normalizeEvaluationRequest, prepareEvaluationRequest } from "./schema.js";
 
 const MAX_FILES = 8;
 const MAX_FILE_BYTES = 16_384;
@@ -27,8 +27,11 @@ export interface FileState { path: string; content: string }
 /** Admit every selected file before any provider request; no partial upload after a rejected input. */
 export async function readJudgmentFiles(cwd: string, paths: readonly string[], signal?: AbortSignal): Promise<FileState[]> {
   if (paths.length < 1 || paths.length > MAX_FILES) throw new TypeSafeIntegrationError("validation", `Select 1–${MAX_FILES} files.`);
-  const root = await realpath(cwd);
+  let root: string;
+  try { root = await realpath(cwd); }
+  catch { throw new TypeSafeIntegrationError("validation", "The workspace directory could not be read."); }
   const seen = new Set<string>();
+  const identities = new Set<string>();
   const files: FileState[] = [];
   for (const path of paths) {
     if (signal?.aborted) throw new TypeSafeIntegrationError("aborted", "File judgment cancelled before upload.");
@@ -43,15 +46,30 @@ export async function readJudgmentFiles(cwd: string, paths: readonly string[], s
     }
     if (seen.has(local)) throw new TypeSafeIntegrationError("validation", "Duplicate file selection; each file is judged once.");
     seen.add(local);
-    let componentPath = root;
-    for (const part of local.split(sep)) {
-      componentPath = resolve(componentPath, part);
-      if ((await lstat(componentPath)).isSymbolicLink()) throw new TypeSafeIntegrationError("validation", "Symlink paths are not permitted for file judgments.");
+    let handle: FileHandle;
+    try {
+      let componentPath = root;
+      for (const part of local.split(sep)) {
+        componentPath = resolve(componentPath, part);
+        if ((await lstat(componentPath)).isSymbolicLink()) throw new TypeSafeIntegrationError("validation", "Symlink paths are not permitted for file judgments.");
+      }
+      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+      // A caller's path mistake (missing, a directory, unreadable) is a classified rejection, never a raw filesystem
+      // error: the tool contract promises a safe message, and a raw one carries the resolved absolute path.
+      if (error instanceof TypeSafeIntegrationError) throw error;
+      throw new TypeSafeIntegrationError("validation", "A selected file could not be read; check that it exists and is readable.");
     }
-    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await handle.stat();
       if (!stat.isFile() || stat.nlink !== 1) throw new TypeSafeIntegrationError("validation", "Select a regular, non-hardlinked source file.");
+      // A case-insensitive volume serves the same file under several spellings, which the path-string check above cannot
+      // see; the inode can. `ino` is 0 where the platform does not report one, so that check is skipped there.
+      const identity = stat.ino === 0 ? undefined : `${stat.dev}:${stat.ino}`;
+      if (identity !== undefined) {
+        if (identities.has(identity)) throw new TypeSafeIntegrationError("validation", "Duplicate file selection; each file is judged once.");
+        identities.add(identity);
+      }
       if (stat.size > MAX_FILE_BYTES) throw new TypeSafeIntegrationError("validation", `A selected file exceeds ${MAX_FILE_BYTES} bytes; use a smaller supplied-state excerpt instead.`);
       const buffer = Buffer.alloc(MAX_FILE_BYTES + 1);
       let length = 0;
@@ -87,6 +105,9 @@ export function registerFileEvaluation(pi: ExtensionAPI, options: { enabled: () 
       "Never upload credentials, confidential user data, production records, or source not approved for the endpoint. If the guard rejects a file, do not bypass it; use local inspection or a sanitized supplied-state excerpt.",
     ],
     parameters: fileEvaluationSchema,
+    // Pi validates against `parameters` before execute, so the file tool needs the same near-miss admission the
+    // supplied-state tool gets; the cast only names the schema's type.
+    prepareArguments: args => normalizeEvaluationRequest(args) as Static<typeof fileEvaluationSchema>,
     async execute(_id, params, signal, _onUpdate, ctx) {
       if (!options.enabled()) throw new TypeSafeIntegrationError("configuration", "File judgments are disabled. Operator opt-in is required; do not edit environment/config files to enable them.");
       // Validate all questions and payload sizes before starting the batch.

@@ -13,8 +13,10 @@ import { loginWithPrompt } from "./login.js";
 import { DEFAULT_MAX_INPUT_BYTES, evaluationSchema, normalizeEvaluationRequest, prepareEvaluationRequest } from "./schema.js";
 import { registerFileEvaluation } from "./files.js";
 
-// Select one backend consistently for requests, credentials, status, and consent.
-const backend = (process.env.PI_TYPESAFE_BACKEND ?? "typesafe") as TypeSafeBackend;
+// Select one backend consistently for requests, credentials, status, and consent. A blank or whitespace-only value is
+// an unset .env entry, not a backend name; a name the registry does not know still fails loudly here.
+const configuredBackend = process.env.PI_TYPESAFE_BACKEND?.trim();
+const backend = (configuredBackend || "typesafe") as TypeSafeBackend;
 const endpoint = resolveBackend(backend);
 const disclosure = `Submitted state and questions will be sent to ${backendHost(backend)} and may incur charges. Do not include secrets. The extension does not collect files or conversation history. Results are model judgments, not proof or authorization.`;
 const sample = {
@@ -135,8 +137,13 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
     async handler(args, ctx) {
       const action = args.trim() || "status";
       const report = (text: string, level: "info" | "warning" | "error" = "info") => {
-        if (ctx.hasUI) ctx.ui.notify(text, level);
-        else pi.sendMessage({ customType: "typesafe-status", content: text, display: true });
+        // A host without Pi's message channel must not turn a reported failure into a thrown one.
+        try {
+          if (ctx.hasUI) ctx.ui.notify(text, level);
+          else pi.sendMessage({ customType: "typesafe-status", content: text, display: true });
+        } catch {
+          // Reporting must never replace the failure it describes.
+        }
       };
       try {
         if (action === "status") {
@@ -148,7 +155,9 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
           const today = spend
             ? `Today ${spend.today.requestsStarted} requests (${spend.today.requestsSucceeded} ok, ${spend.today.requestsFailed} failed), ${spend.today.inputTokens} input tokens, ~$${spend.today.estimatedUsd.toFixed(4)}.`
             : "";
-          const blocked = spend?.blocked ? ` Cap reached: ${spend.blocked.cap} ${spend.blocked.used}/${spend.blocked.limit} on ${spend.blocked.day}; no request will be submitted until the local day rolls over.` : "";
+          const capped = spend?.blocked;
+          const until = capped?.cap === "requestsPerSession" ? "a new session starts" : "the local day rolls over";
+          const blocked = capped === undefined ? "" : ` Cap reached: ${capped.cap} ${capped.used}/${capped.limit} on ${capped.day}; no request will be submitted until ${until}.`;
           report(`TypeSafe: ${enabled ? "enabled" : "disabled"}. ${auth.text} ${session} ${today}${blocked} Model: ${endpoint.defaultModel}. Session limits reset on session start/reload; daily counters persist and caps come from client options or PI_TYPESAFE_MAX_* environment variables. ${disclosure}`, auth.level === "error" && enabled ? "warning" : "info");
           return;
         }

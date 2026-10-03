@@ -48,12 +48,13 @@ Use glob/grep/LSP to shortlist candidates first. There is no glob expansion,
 whole-repo scan, command execution, silent truncation, or generative summary.
 Read the shortlisted source before editing it; ranking is not correctness proof.
 
-Preflight rejects traversal/outside-workspace paths, symlinks, hardlinks,
-credential paths, binary/oversized files, duplicates, and common credential
-shapes before any selected file is uploaded. These conservative checks can
-reject legitimate examples and are not DLP, race-proof containment, or permission
-to upload private source. Only select source approved for the configured host.
-Unsafe-input refusal is not a failed-to-detect-all-secrets guarantee.
+Preflight rejects traversal/outside-workspace paths, symlinks, hardlinks, absent
+or unreadable selections, credential paths, binary/oversized files, duplicates,
+and common credential shapes before any selected file is uploaded. These
+conservative checks can reject legitimate examples and are not DLP, race-proof
+containment, or permission to upload private source. Only select source approved
+for the configured host. Unsafe-input refusal is not a failed-to-detect-all-secrets
+guarantee.
 
 Personal OMP guidance belongs in `~/.omp/agent/RULES.md` (always-apply) and local,
 Git-ignored project `DEVELOPER.md` files. The extension's own tool instructions

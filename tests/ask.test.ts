@@ -61,3 +61,11 @@ test("the ask deadline and the caller's signal both cancel the request", async (
   assert.equal((await aborted).ok, false);
   assert.equal(DEFAULT_ASK_TIMEOUT_MS, 15_000);
 });
+
+test("an out-of-range deadline is answered, not thrown", async () => {
+  // AbortSignal.timeout throws a RangeError for these, which would escape ask()'s own catch.
+  for (const timeoutMs of [-1, 0, 2 ** 40, Infinity, NaN, 1.5]) {
+    const answer = await ask(judgeReturning(result), request, { timeoutMs });
+    assert.deepEqual(answer, { ok: false, error: "timeoutMs must be an integer of 1 to 4294967295 milliseconds.", errorCode: "configuration" });
+  }
+});

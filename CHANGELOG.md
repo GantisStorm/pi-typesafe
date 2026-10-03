@@ -15,6 +15,58 @@
   checks are conservative screening, not complete DLP or a security sandbox.
 - Tool guidance encourages useful proactive semantic offloading while reserving
   facts, calculations, tests, permissions, and runtime proof for deterministic tools.
+- Exported `readJudgmentFiles`, `FileState`, and `fileEvaluationSchema` so other
+  harness adapters reuse the existing guarded source admission rather than copy it.
+
+### Removed
+
+- `UsageLedger.describe()`. It was reachable only from this package's own tests:
+  `/typesafe status` formats the spend report it holds from `getSpend()`, so the
+  method was a second copy of that formatting with no caller. Consumers who used
+  it can format `UsageReport` and `SpendCaps` the same way the extension does.
+
+### Changed
+
+- The owner-only atomic write (mkdir 0700, temp file, chmod 0600, rename, and
+  best-effort cleanup) now lives once in `src/atomic.ts` instead of being written
+  out in `auth.ts`, `credentials.ts`, and `usage.ts`. Internal only: no export
+  changes, and each caller keeps its own error handling.
+
+### Fixed
+
+- **Guarded file admission:** an absent, unreadable, or non-file selection is a
+  classified `validation` rejection instead of a raw filesystem error that carried
+  the resolved absolute path; two spellings of one path on a case-insensitive
+  volume count as one selection; and `typesafe_evaluate_files` normalizes the
+  same near-miss aliases as `typesafe_evaluate` before Pi's own argument
+  validation, which had rejected them first.
+- **Batching:** each request is admitted by `evaluate`, so a client configured
+  with a non-default `maxInputBytes` no longer has the batch refuse a request
+  `evaluate` accepts; a `stopOn` rule that throws, or a non-finite `concurrency`
+  or `maxQuestions`, no longer breaks the never-throwing, never-silently-skipped
+  guarantees.
+- **Spend accounting:** tokens billed for a response that fails response
+  validation now reach the session counters and the daily ledger, so the token
+  and spend caps see them.
+- **API:** `getSpend().blocked` reports a reached session cap as
+  `requestsPerSession` (a new `BlockedCap["cap"]` member) instead of reporting
+  nothing while the next `evaluate` is refused, and it no longer hides a reached
+  daily cap; `UsageLedger.recordFailure` accepts the input/output tokens a failed
+  request still billed.
+- **Configuration:** a non-finite `maxInputBytes` or `usdPerMTok`, an
+  out-of-range `ask` deadline, a caller endpoint `keyEnv` naming an
+  `Object.prototype` member such as `toString`, and a non-string `apiKey` are
+  refused with a classified error instead of being ignored, thrown raw, or
+  silently reading a function.
+- **Credentials:** a key store that cannot finish removes its temporary file
+  instead of leaving the plaintext key behind, and an unremovable stored key is a
+  classified `configuration` error.
+- **Calibration:** a threshold limit below 2 no longer returns `[undefined]`,
+  which crashed `formatCalibration`.
+- **Extension:** `PI_TYPESAFE_BACKEND` that is empty or whitespace falls back to
+  the default backend instead of failing the extension at import (an unknown name
+  still fails), and output the host cannot deliver no longer turns a reported
+  failure into a thrown one.
 
 ## 0.8.0
 

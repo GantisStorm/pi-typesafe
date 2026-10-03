@@ -16,7 +16,10 @@ export interface BackendConfig {
   modelsField?: string;
   /** Entry field carrying the id callers pass as `model:`, when the SDK's own `name` is only a label. */
   modelsIdField?: string;
-  /** Whether the model list checks the key. A public list accepts any key, so it proves nothing. Absent means it does. */
+  /**
+   * Whether the model list checks the key. A public list accepts any key, so it proves nothing. A registry backend that
+   * omits it verifies the key; a caller-supplied endpoint must opt in with `true`, because its list is unknown.
+   */
   modelsVerifyKey?: boolean;
 }
 

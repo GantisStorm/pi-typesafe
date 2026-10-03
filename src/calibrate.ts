@@ -105,9 +105,12 @@ export function sweep(samples: readonly ScoredSample[], thresholds: readonly num
 /** The distinct scores, ascending, as a threshold grid: every point where the counts can change. */
 export function defaultThresholds(samples: readonly ScoredSample[], limit = 64): number[] {
   const distinct = [...new Set(samples.map(sample => sample.score))].sort((a, b) => a - b);
-  if (distinct.length <= limit) return distinct;
-  const step = (distinct.length - 1) / (limit - 1);
-  return Array.from({ length: limit }, (_, index) => distinct[Math.round(index * step)] as number);
+  // A limit below 2 (or not a number) used to divide by zero and return [undefined], which then crashed formatting.
+  const wanted = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 64;
+  if (distinct.length <= wanted) return distinct;
+  if (wanted === 1) return [distinct[0] as number];
+  const step = (distinct.length - 1) / (wanted - 1);
+  return Array.from({ length: wanted }, (_, index) => distinct[Math.round(index * step)] as number);
 }
 
 /**

@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeOwnerOnlyAtomic } from "./atomic.js";
 import { piTypesafeDir } from "./credentials.js";
 
 /**
@@ -38,9 +39,13 @@ export interface SpendCaps {
   readonly maxUsdPerDay?: number;
 }
 
-/** The cap that stops the next request, with what it allows and what has been used today. */
+/**
+ * The cap that stops the next request, with what it allows and what has been used. `requestsPerSession` is the client's
+ * own attempt cap and resets when a session starts; the others are the ledger's daily caps, and their `day` is the local
+ * day that reached them.
+ */
 export interface BlockedCap {
-  readonly cap: "requestsPerDay" | "inputTokensPerDay" | "usdPerDay";
+  readonly cap: "requestsPerSession" | "requestsPerDay" | "inputTokensPerDay" | "usdPerDay";
   readonly limit: number;
   readonly used: number;
   readonly day: string;
@@ -112,14 +117,10 @@ function keepRecent(days: Record<string, UsageTotals>, today: string): Record<st
 /** Owner-only, atomic, and best-effort: a ledger this process cannot write never fails a request. */
 function writeDays(path: string, days: Record<string, UsageTotals>): void {
   const file: LedgerFile = { version: USAGE_VERSION, days };
-  const temporary = `${path}.${process.pid}.tmp`;
   try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(temporary, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, flag: "w" });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    writeOwnerOnlyAtomic(path, `${JSON.stringify(file, null, 2)}\n`);
   } catch {
-    try { rmSync(temporary, { force: true }); } catch { /* best-effort cleanup only */ }
+    // Best-effort only; a ledger this process cannot write never fails a request.
   }
 }
 
@@ -177,17 +178,18 @@ export interface UsageLedger {
   /** Count the attempt before it is submitted; a request that never returns still counts. */
   recordStart(): void;
   recordSuccess(inputTokens: number, outputTokens: number): void;
-  recordFailure(): void;
-  /** The reached day cap that blocks the next request, or undefined. The caller owns the caps. */
+  /** Count a submitted request that failed, with any tokens the provider billed before the failure. */
+  recordFailure(inputTokens?: number, outputTokens?: number): void;
+  /** The reached daily cap that blocks the next request, or undefined; the caller composes its own session cap. */
   blocked(caps: SpendCaps): BlockedCap | undefined;
-  /** One line for status output: today's requests, tokens, and cost, with the caps that apply. */
-  describe(caps?: SpendCaps): string;
 }
 
 export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
   const path = options.path ?? usagePath();
   const now = options.now ?? (() => new Date());
-  const usdPerMTok = options.usdPerMTok && options.usdPerMTok > 0 ? options.usdPerMTok : DEFAULT_USD_PER_MTOK;
+  // A non-finite price would make every estimate Infinity and stop the USD cap from ever tripping.
+  const requestedPrice = options.usdPerMTok;
+  const usdPerMTok = requestedPrice !== undefined && Number.isFinite(requestedPrice) && requestedPrice > 0 ? requestedPrice : DEFAULT_USD_PER_MTOK;
   let day = localDay(now());
   let days = keepRecent(readDays(path), day);
   let totals = days[day] as UsageTotals;
@@ -231,7 +233,11 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
       inputTokens: Number.isSafeInteger(inputTokens) && inputTokens > 0 ? inputTokens : 0,
       outputTokens: Number.isSafeInteger(outputTokens) && outputTokens > 0 ? outputTokens : 0,
     }),
-    recordFailure: () => add({ requestsFailed: 1 }),
+    recordFailure: (inputTokens = 0, outputTokens = 0) => add({
+      requestsFailed: 1,
+      inputTokens: Number.isSafeInteger(inputTokens) && inputTokens > 0 ? inputTokens : 0,
+      outputTokens: Number.isSafeInteger(outputTokens) && outputTokens > 0 ? outputTokens : 0,
+    }),
     blocked: (caps: SpendCaps) => {
       roll();
       const checks: Array<[BlockedCap["cap"], number | undefined, number]> = [
@@ -243,16 +249,6 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
         if (limit !== undefined && used >= limit) return { cap, limit, used, day };
       }
       return undefined;
-    },
-    describe: (caps: SpendCaps = {}) => {
-      roll();
-      const current = report(totals, day);
-      const limits = [
-        caps.maxRequestsPerDay === undefined ? undefined : `${current.requestsStarted}/${caps.maxRequestsPerDay} requests`,
-        caps.maxInputTokensPerDay === undefined ? undefined : `${current.inputTokens}/${caps.maxInputTokensPerDay} input tokens`,
-        caps.maxUsdPerDay === undefined ? undefined : `$${current.estimatedUsd.toFixed(4)}/$${caps.maxUsdPerDay.toFixed(2)}`,
-      ].filter((part): part is string => part !== undefined);
-      return `${current.requestsStarted} requests today (${current.requestsSucceeded} ok, ${current.requestsFailed} failed), ${current.inputTokens} input / ${current.outputTokens} output tokens, ~$${current.estimatedUsd.toFixed(4)}${limits.length ? `; caps ${limits.join(", ")}` : "; no daily cap"}`;
     },
   };
 }

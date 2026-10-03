@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,4 +141,63 @@ test("keySourceLabel names each source", () => {
   assert.equal(keySourceLabel({ kind: "stored", key: "k", path: "/tmp/auth.json" }), "/typesafe login");
   assert.equal(keySourceLabel({ kind: "missing" }), "no key");
   assert.equal(keySourceLabel({ kind: "unusable", path: "/tmp/auth.json", reason: "r" }), "unusable key");
+});
+
+test("an endpoint keyEnv that names an Object.prototype member is missing, not a crash", () => {
+  // process.env inherits Object.prototype, so reading `toString` used to resolve a function and throw.
+  assert.deepEqual(keySituation({ label: "Probe", host: "https://probe.example.com", keyEnv: "toString" }), { kind: "missing" });
+  assert.deepEqual(keySituation({ label: "Probe", host: "https://probe.example.com", keyEnv: "valueOf" }), { kind: "missing" });
+  process.env.PROBE_JEV_KEY = `  ${validKey}  `;
+  try {
+    assert.deepEqual(keySituation({ label: "Probe", host: "https://probe.example.com", keyEnv: "PROBE_JEV_KEY" }), { kind: "environment", key: validKey, keyEnv: "PROBE_JEV_KEY" });
+  } finally {
+    delete process.env.PROBE_JEV_KEY;
+  }
+});
+
+test("a key store that cannot finish removes its temp file instead of leaving the key behind", () => {
+  const storeDir = join(agentDir, "pi-typesafe");
+  mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+  // Renaming a file onto a directory cannot succeed, so the failure happens after the temp file is written.
+  mkdirSync(credentialsPath());
+  try {
+    assert.throws(() => storeApiKey(validKey), (error: unknown) => error instanceof TypeSafeIntegrationError && error.code === "configuration");
+    assert.deepEqual(readdirSync(storeDir).filter(name => name.endsWith(".tmp")), []);
+  } finally {
+    rmSync(credentialsPath(), { recursive: true, force: true });
+  }
+});
+
+test("an unremovable stored key is a classified error that leaves the key in place", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  storeApiKey(validKey);
+  const storeDir = join(agentDir, "pi-typesafe");
+  chmodSync(storeDir, 0o500);
+  try {
+    assert.throws(() => clearStoredApiKey(), (error: unknown) => error instanceof TypeSafeIntegrationError && error.code === "configuration" && /Could not remove/.test(error.message));
+    assert.equal(readStoredApiKey(), validKey);
+  } finally {
+    chmodSync(storeDir, 0o700);
+  }
+  assert.equal(clearStoredApiKey(), true);
+});
+
+test("a key store in an unwritable directory is a classified error that leaves the old key whole", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const storeDir = join(agentDir, "pi-typesafe");
+  const replacement = "ts_test_key_fedcba9876543210";
+  storeApiKey(validKey);
+  assert.equal(statSync(credentialsPath()).mode & 0o777, 0o600);
+  const before = readFileSync(credentialsPath(), "utf8");
+  chmodSync(storeDir, 0o500);
+  try {
+    assert.throws(() => storeApiKey(replacement), (error: unknown) => error instanceof TypeSafeIntegrationError && error.code === "configuration" && /Could not write/.test(error.message));
+  } finally {
+    chmodSync(storeDir, 0o700);
+  }
+  assert.equal(readFileSync(credentialsPath(), "utf8"), before, "a failed store must not truncate or half-write the key file");
+  assert.deepEqual(readdirSync(storeDir).filter(name => name.endsWith(".tmp")), []);
+  assert.equal(readStoredApiKey(), validKey);
+  // Writable again: the same call replaces the key in one step, owner-only.
+  storeApiKey(replacement);
+  assert.equal(readStoredApiKey(), replacement);
+  assert.equal(statSync(credentialsPath()).mode & 0o777, 0o600);
 });

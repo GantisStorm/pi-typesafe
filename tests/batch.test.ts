@@ -92,6 +92,18 @@ test("the splitter is pure: a request that already fits is one chunk, unchanged"
   assert.deepEqual(chunkEvaluationRequest(invalid), [invalid]);
 });
 
+test("a non-finite concurrency uses the default instead of skipping every item", async () => {
+  const results = await fanOut([1, 2, 3], async value => value * 2, { concurrency: NaN });
+  assert.deepEqual(results.map(result => result.ok ? result.value : "failed"), [2, 4, 6]);
+  assert.equal(results.every(result => result.ok), true);
+});
+
+test("a non-finite question limit uses the default instead of dropping every question", () => {
+  const questions = manyQuestions(3);
+  const chunks = chunkEvaluationRequest({ state: "synthetic", questions }, { maxQuestions: NaN });
+  assert.deepEqual(chunks.map(chunk => Object.keys(chunk.questions).length), [3]);
+});
+
 test("an invalid request is one settled failure, not a thrown error", async () => {
   const counter = { calls: 0 };
   const client = createTypeSafe({ ledger: ledgerFor("invalid"), fetch: answeringFetch(counter) });
@@ -144,6 +156,18 @@ test("evaluateMany reports per-request failures and stops submitting after a bud
   assert.ok(batch.elapsedMs >= 0);
 });
 
+test("a batched answer keyed __proto__ merges as an ordinary own key", async () => {
+  const questions = JSON.parse('{"__proto__":{"type":"noul","instructions":"?"},"yes":{"type":"noul","instructions":"?"}}') as Questions;
+  const counter = { calls: 0 };
+  const client = createTypeSafe({ ledger: ledgerFor("prototype-key"), fetch: answeringFetch(counter) });
+  const batch = await client.evaluateAll({ state: "synthetic", questions });
+  assert.equal(counter.calls, 1);
+  assert.equal(batch.ok, true);
+  assert.deepEqual(Object.keys(batch.answers), ["__proto__", "yes"]);
+  assert.equal(Object.getPrototypeOf(batch.answers), Object.prototype);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(batch.answers, "__proto__")?.value, { type: "noul", noul: 0.75 });
+});
+
 test("a daily cap stops the batch with the cap named", async () => {
   const counter = { calls: 0 };
   const client = createTypeSafe({ maxRequestsPerDay: 1, ledger: ledgerFor("day-cap"), fetch: answeringFetch(counter) });
@@ -153,4 +177,25 @@ test("a daily cap stops the batch with the cap named", async () => {
   assert.ok(second && !second.ok);
   assert.ok(second.error instanceof TypeSafeIntegrationError && second.error.code === "budget");
   assert.ok(second.error.message.includes("daily request cap"));
+});
+
+test("batching admits with the client's byte budget, not the default one", async () => {
+  const counter = { calls: 0 };
+  const client = createTypeSafe({ maxInputBytes: 131_072, ledger: ledgerFor("batch-bytes"), fetch: answeringFetch(counter) });
+  const large = { state: "x".repeat(70_000), questions: { yes: noul("Is this synthetic?") } };
+  assert.equal((await client.evaluate(large)).answers.yes?.type, "noul");
+  const batch = await client.evaluateMany([large]);
+  assert.equal(batch.ok, true);
+  assert.equal(counter.calls, 2);
+});
+
+test("a stop rule that throws cannot reject the pool", async () => {
+  const results = await fanOut([1, 2, 3], async () => { throw new Error("worker failed"); }, {
+    concurrency: 1,
+    stopOn: () => { throw new Error("rule failed"); },
+  });
+  assert.equal(results.length, 3);
+  assert.equal(results[0]?.ok, false);
+  // The rule could not be evaluated, so the rest is not launched: a stop rule exists to guard further spending.
+  assert.deepEqual(results.map(result => !result.ok && result.skipped), [false, true, true]);
 });

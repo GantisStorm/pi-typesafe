@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,8 +22,6 @@ test("a ledger counts requests, tokens, and failures, and prices input tokens on
   assert.deepEqual({ ...today, estimatedUsd: undefined }, { requestsStarted: 2, requestsSucceeded: 1, requestsFailed: 1, inputTokens: 42, outputTokens: 7, day: "2026-01-01", estimatedUsd: undefined });
   // Output tokens are free; only input tokens carry a price.
   assert.equal(today.estimatedUsd, estimateUsd(42, DEFAULT_USD_PER_MTOK));
-  assert.ok(ledger.describe().includes("2 requests today (1 ok, 1 failed)"));
-  assert.ok(ledger.describe().includes("~$0.0000"));
 });
 
 test("totals survive a new ledger instance, so a restart does not reset the day", () => {
@@ -103,4 +101,37 @@ test("the default usage path sits with the key store", () => {
   } finally {
     if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved;
   }
+});
+
+test("a non-finite price falls back to the default instead of poisoning estimates and caps", () => {
+  const ledger = openUsageLedger({ path: ledgerPath("price"), now: at.bind(null, 8), usdPerMTok: Infinity });
+  ledger.recordSuccess(1_000, 0);
+  assert.equal(ledger.usdPerMTok, DEFAULT_USD_PER_MTOK);
+  assert.equal(ledger.today().estimatedUsd, estimateUsd(1_000, DEFAULT_USD_PER_MTOK));
+  // Infinity would have reported the USD cap as reached for a fraction of a cent.
+  assert.equal(ledger.blocked({ maxUsdPerDay: 1 }), undefined);
+});
+
+test("an unwritable ledger directory is tolerated, and the last complete file survives", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const dir = join(workspace, "unwritable");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const path = join(dir, "usage.json");
+  const ledger = openUsageLedger({ path, now: at.bind(null, 9) });
+  ledger.recordStart();
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  const before = readFileSync(path, "utf8");
+  chmodSync(dir, 0o500);
+  try {
+    // The temp file cannot even be created, so the write fails while the previous record stays whole on disk.
+    ledger.recordStart();
+    ledger.recordSuccess(10, 0);
+  } finally {
+    chmodSync(dir, 0o700);
+  }
+  assert.equal(readFileSync(path, "utf8"), before, "a failed write must not truncate or half-write the ledger");
+  assert.deepEqual(readdirSync(dir).filter(name => name.endsWith(".tmp")), []);
+  assert.equal(openUsageLedger({ path, now: at.bind(null, 9) }).today().requestsStarted, 1);
+  openUsageLedger({ path, now: at.bind(null, 9) }).recordStart();
+  assert.equal(openUsageLedger({ path, now: at.bind(null, 9) }).today().requestsStarted, 2);
+  assert.equal(statSync(path).mode & 0o777, 0o600);
 });

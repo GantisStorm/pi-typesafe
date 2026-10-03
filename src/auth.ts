@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { writeOwnerOnlyAtomic } from "./atomic.js";
 import { DEFAULT_BACKEND, TYPESAFE_KEY_ENV, resolveBackend, usesTypesafeKey } from "./backends.js";
 import type { BackendSpec } from "./backends.js";
 import { credentialsPath, keySituation, keySourceLabel, piTypesafeDir } from "./credentials.js";
@@ -78,14 +79,10 @@ function readState(path: string): { verifiedAt?: string; lastFailure?: AuthFailu
 
 /** Owner-only, atomic, and best-effort: an unwritable auth record never changes how a request behaves. */
 function writeState(path: string, state: { verifiedAt?: string; lastFailure?: AuthFailure }): void {
-  const temporary = `${path}.${process.pid}.tmp`;
   try {
-    mkdirSync(piTypesafeDir(), { recursive: true, mode: 0o700 });
-    writeFileSync(temporary, `${JSON.stringify({ version: AUTH_VERSION, ...state }, null, 2)}\n`, { mode: 0o600, flag: "w" });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    writeOwnerOnlyAtomic(path, `${JSON.stringify({ version: AUTH_VERSION, ...state }, null, 2)}\n`);
   } catch {
-    try { rmSync(temporary, { force: true }); } catch { /* best-effort cleanup only */ }
+    // Best-effort only; an unwritable auth record never changes how a request behaves.
   }
 }
 

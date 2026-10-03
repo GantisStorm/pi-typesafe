@@ -1,6 +1,7 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeOwnerOnlyAtomic } from "./atomic.js";
 import { DEFAULT_BACKEND, TYPESAFE_KEY_ENV, resolveBackend, usesTypesafeKey } from "./backends.js";
 import type { BackendSpec } from "./backends.js";
 import { TypeSafeIntegrationError } from "./errors.js";
@@ -72,7 +73,10 @@ export function readStoredApiKey(): string | undefined {
 export function keySituation(backend: BackendSpec = DEFAULT_BACKEND): KeySituation {
   const config = resolveBackend(backend);
   const keyEnv = config.keyEnv;
-  const fromEnvironment = process.env[keyEnv]?.trim();
+  // process.env inherits Object.prototype, so a keyEnv such as `toString` would otherwise resolve to a function and
+  // throw out of a function documented never to throw for a valid backend.
+  const raw = Object.hasOwn(process.env, keyEnv) ? process.env[keyEnv] : undefined;
+  const fromEnvironment = raw?.trim();
   if (fromEnvironment) return { kind: "environment", key: fromEnvironment, keyEnv };
   if (!usesTypesafeKey(config)) return { kind: "missing" };
   const path = credentialsPath();
@@ -113,11 +117,8 @@ export function storeApiKey(value: unknown): string {
   const key = normalizeApiKey(value);
   const path = credentialsPath();
   try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify({ apiKey: key }, null, 2)}\n`, { mode: 0o600, flag: "w" });
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, path);
+    // The helper removes its temp file on failure, so a failed store never leaves the plaintext key behind.
+    writeOwnerOnlyAtomic(path, `${JSON.stringify({ apiKey: key }, null, 2)}\n`);
   } catch {
     throw new TypeSafeIntegrationError("configuration", `Could not write ${path}. Check directory permissions, or set TYPESAFE_API_KEY in the environment instead.`);
   }
@@ -131,6 +132,11 @@ export function clearStoredApiKey(): boolean {
   } catch {
     return false;
   }
-  rmSync(path, { force: true });
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // A local permissions problem is reported like every other failure, not thrown raw.
+    throw new TypeSafeIntegrationError("configuration", `Could not remove ${path}. Check the directory permissions, or delete the file yourself.`);
+  }
   return true;
 }
