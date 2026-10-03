@@ -17,6 +17,10 @@
   facts, calculations, tests, permissions, and runtime proof for deterministic tools.
 - Exported `readJudgmentFiles`, `FileState`, and `fileEvaluationSchema` so other
   harness adapters reuse the existing guarded source admission rather than copy it.
+- Added a `prepare` script, so npm builds `dist/` when this package is installed
+  from git. A consumer can depend on a commit (`git+https://github.com/GantisStorm/pi-typesafe.git#<sha>`)
+  instead of a machine-local path; before this, `dist/` was gitignored and absent,
+  so a git install shipped no compiled entry points.
 
 ### Removed
 

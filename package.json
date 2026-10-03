@@ -61,7 +61,8 @@
     "test:live": "node --env-file=.env scripts/live-smoke.mjs",
     "dev:pi": "node scripts/dev-pi.mjs",
     "check": "npm run build && npm run typecheck && npm test",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "^0.6.0",
