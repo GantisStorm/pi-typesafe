@@ -38,6 +38,11 @@
   best-effort cleanup) now lives once in `src/atomic.ts` instead of being written
   out in `auth.ts`, `credentials.ts`, and `usage.ts`. Internal only: no export
   changes, and each caller keeps its own error handling.
+- Dropped an internal `defaultModelId` wrapper (one caller, one expression) into
+  `resolveBackend`, reused the ledger's existing `count` for its token
+  normalization, and derived `describeAuth`'s rejected case from `AuthState.usable`
+  instead of a second copy of the 401/403 test. Internal only: no package export
+  or on-disk format changes.
 
 ### Fixed
 

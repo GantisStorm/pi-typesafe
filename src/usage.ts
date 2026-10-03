@@ -230,13 +230,13 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
     recordStart: () => add({ requestsStarted: 1 }),
     recordSuccess: (inputTokens, outputTokens) => add({
       requestsSucceeded: 1,
-      inputTokens: Number.isSafeInteger(inputTokens) && inputTokens > 0 ? inputTokens : 0,
-      outputTokens: Number.isSafeInteger(outputTokens) && outputTokens > 0 ? outputTokens : 0,
+      inputTokens: count(inputTokens),
+      outputTokens: count(outputTokens),
     }),
     recordFailure: (inputTokens = 0, outputTokens = 0) => add({
       requestsFailed: 1,
-      inputTokens: Number.isSafeInteger(inputTokens) && inputTokens > 0 ? inputTokens : 0,
-      outputTokens: Number.isSafeInteger(outputTokens) && outputTokens > 0 ? outputTokens : 0,
+      inputTokens: count(inputTokens),
+      outputTokens: count(outputTokens),
     }),
     blocked: (caps: SpendCaps) => {
       roll();

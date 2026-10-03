@@ -107,11 +107,6 @@ export function backendModelId(backend: TypeSafeBackend, model: string): string 
   return version === null ? model : `typesafe/jev-${version[1]}.${version[2]}`;
 }
 
-/** The model a client sends when the caller names none: the backend's own default, in the form that backend accepts. */
-export function defaultModelId(backend: TypeSafeBackend): string {
-  return backendModelId(backend, DEFAULT_MODEL[backend]);
-}
-
 /**
  * Whether a backend's key comes from the TypeSafe resolution (`TYPESAFE_API_KEY`, then the login store) or only from
  * its own environment variable. Only the TypeSafe backend has a login store; every other backend is environment-only.
@@ -147,7 +142,7 @@ export function resolveBackend(backend?: BackendSpec): ResolvedBackend {
       name: spec,
       host: entry.host,
       keyEnv: entry.keyEnv ?? TYPESAFE_KEY_ENV,
-      defaultModel: defaultModelId(spec),
+      defaultModel: backendModelId(spec, DEFAULT_MODEL[spec]),
       modelsVerifyKey: entry.modelsVerifyKey !== false,
     };
   }

@@ -157,8 +157,8 @@ export function describeAuth(state: AuthState = authState()): AuthReport {
   if (state.kind === "unusable") {
     return { level: "error", text: `${label}: unusable (${state.reason ?? "unknown reason"}) — judgments are skipped until the key is fixed.${since}` };
   }
-  const rejected = state.lastFailure?.code === "http" && state.lastFailure.status !== undefined && REJECTED_STATUSES.has(state.lastFailure.status);
-  if (rejected) {
+  // After the missing and unusable kinds returned above, `usable` is false only for a rejection.
+  if (!state.usable) {
     return { level: "error", text: `${label}: ${state.keyName} was rejected.${since}` };
   }
   if (!state.verified) {
