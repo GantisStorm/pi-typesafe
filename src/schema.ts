@@ -6,8 +6,14 @@ import { TypeSafeIntegrationError } from "./errors.js";
 /** Default UTF-8 JSON byte budget for one evaluation request; the tool and the client share it. */
 export const DEFAULT_MAX_INPUT_BYTES = 65_536;
 
-/** Questions one request may ask. More than this needs `chunkEvaluationRequest`, which splits and fans out. */
-export const DEFAULT_MAX_QUESTIONS = 32;
+/**
+ * Questions one request may ask. More than this needs `chunkEvaluationRequest`, which splits and fans out.
+ *
+ * 20 is a fork policy choice, not the upstream number: it matches the shared harness ceiling (`~/.bb/jev` and the
+ * harness-parity adapter) so the tool, the chunker, and every adapter agree on one request size. Upstream pi-typesafe
+ * declares 32; keeping the fork at 32 drifted the installed copy and split harness-parity's chunking gate.
+ */
+export const DEFAULT_MAX_QUESTIONS = 20;
 
 // The API accepts structured descriptions, not only strings. The schema is the only shape guidance the model gets
 // before its first call, so every field the agent authors says what it means.
@@ -30,10 +36,14 @@ const question = Type.Union([
   Type.Object({
     type: Type.Literal("choice", { description: "Pick one criteria label." }),
     instructions,
-    criteria: Type.Record(Type.String({ minLength: 1, maxLength: 200 }), entry(), {
+    // `Type.Record` drops its key schema entirely (it compiles to `patternProperties`), so `propertyNames` on an
+    // object is the only form TypeBox enforces the label length on.
+    criteria: Type.Object({}, {
+      additionalProperties: entry(),
+      propertyNames: Type.String({ minLength: 1, maxLength: 200 }),
       minProperties: 1,
       maxProperties: 64,
-      description: "The options as a map from label to when it applies: { billing: \"Charges and payments\", other: null }. 1–64 entries.",
+      description: "The options as a map from label to when it applies: { billing: \"Charges and payments\", other: null }. 1–64 entries, each label 1–200 characters.",
     }),
   }, { additionalProperties: false }),
   Type.Object({
@@ -44,10 +54,14 @@ const question = Type.Union([
 ]);
 
 /** Shared question map, reused by supplied-state and file tools without schema introspection. */
-export const evaluationQuestionsSchema = Type.Record(Type.String({ minLength: 1, maxLength: 100 }), question, {
+// `Type.Record` compiles its key schema away (`patternProperties`), so the id length is only enforced by
+// `propertyNames` on the object form.
+export const evaluationQuestionsSchema = Type.Object({}, {
+  additionalProperties: question,
+  propertyNames: Type.String({ minLength: 1, maxLength: 100 }),
   minProperties: 1,
   maxProperties: DEFAULT_MAX_QUESTIONS,
-  description: "Questions keyed by a short id: { urgent: { type: 'noul', instructions: ... } }. For the file tool, each question judges state.file.content independently.",
+  description: "Questions keyed by a short id (1–100 characters): { urgent: { type: 'noul', instructions: ... } }. For the file tool, each question judges state.file.content independently.",
 });
 
 /** The JSON schema used by both the Pi tool and the programmatic interface. */
@@ -70,15 +84,26 @@ function describeSchemaErrors(value: unknown): string {
   return details.join("; ");
 }
 
-/** Validate without including submitted content in validation errors. Prefer prepareEvaluationRequest(), which also accepts near-misses and enforces the byte budget. */
-export function parseEvaluationRequest(value: unknown): SystemOneRequest {
+/** Reject accessors, cycles, and non-JSON values before any admission step reads a field. */
+function assertJsonSafe(value: unknown): void {
   if (value !== null && typeof value === "object" && !Array.isArray(value) && !isJsonSafe(value)) {
     throw new TypeSafeIntegrationError("validation", `Invalid evaluation request: state and questions must be plain JSON. ${usage}`);
   }
-  if (!Check(evaluationSchema, value)) {
-    throw new TypeSafeIntegrationError("validation", `Invalid evaluation request at ${describeSchemaErrors(value)}. ${usage}`);
+}
+
+/** Validate without including submitted content in validation errors. Prefer prepareEvaluationRequest(), which also accepts near-misses and enforces the byte budget. */
+export function parseEvaluationRequest(value: unknown): SystemOneRequest {
+  assertJsonSafe(value);
+  let detail: string;
+  try {
+    if (Check(evaluationSchema, value)) return value as SystemOneRequest;
+    detail = describeSchemaErrors(value);
+  } catch {
+    // A Proxy whose [[Get]] throws passes isJsonSafe (which reads descriptors, never values) and then throws inside
+    // Check/Errors. Classify it rather than letting a raw error past the declared contract.
+    detail = "the request is not a plain JSON object";
   }
-  return value as SystemOneRequest;
+  throw new TypeSafeIntegrationError("validation", `Invalid evaluation request at ${detail}. ${usage}`);
 }
 
 function isJsonSafe(value: unknown): boolean {
@@ -113,30 +138,36 @@ function isJsonSafe(value: unknown): boolean {
 
 /** Accept common near-misses from language models without loosening the schema itself. Prefer prepareEvaluationRequest(), which applies this before validating. */
 export function normalizeEvaluationRequest(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const request = value as Record<string, unknown>;
-  const questions = request.questions;
-  if (!questions || typeof questions !== "object" || Array.isArray(questions)) return value;
-  // Object.fromEntries defines own properties, so an id such as `__proto__` stays an ordinary question key instead of
-  // rewriting the map's prototype the way an index assignment would.
-  const entries: Array<[string, unknown]> = [];
-  for (const [id, question] of Object.entries(questions as Record<string, unknown>)) {
-    if (!question || typeof question !== "object" || Array.isArray(question)) { entries.push([id, question]); continue; }
-    const { options, levels, choices, ...rest } = question as Record<string, unknown>;
-    const item: Record<string, unknown> = { ...rest };
-    if (item.criteria === undefined) {
-      const alias = options ?? levels ?? choices;
-      if (alias !== undefined) item.criteria = alias;
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const request = value as Record<string, unknown>;
+    const questions = request.questions;
+    if (!questions || typeof questions !== "object" || Array.isArray(questions)) return value;
+    // Object.fromEntries defines own properties, so an id such as `__proto__` stays an ordinary question key instead of
+    // rewriting the map's prototype the way an index assignment would.
+    const entries: Array<[string, unknown]> = [];
+    for (const [id, question] of Object.entries(questions as Record<string, unknown>)) {
+      if (!question || typeof question !== "object" || Array.isArray(question)) { entries.push([id, question]); continue; }
+      const { options, levels, choices, ...rest } = question as Record<string, unknown>;
+      const item: Record<string, unknown> = { ...rest };
+      if (item.criteria === undefined) {
+        const alias = options ?? levels ?? choices;
+        if (alias !== undefined) item.criteria = alias;
+      }
+      if (item.type === "choice" && Array.isArray(item.criteria) && item.criteria.every(label => typeof label === "string" && label)) {
+        item.criteria = Object.fromEntries((item.criteria as string[]).map(label => [label, null]));
+      }
+      if (item.type === "noul" && typeof item.criteria === "string") {
+        item.criteria = { true: item.criteria };
+      }
+      entries.push([id, item]);
     }
-    if (item.type === "choice" && Array.isArray(item.criteria) && item.criteria.every(label => typeof label === "string" && label)) {
-      item.criteria = Object.fromEntries((item.criteria as string[]).map(label => [label, null]));
-    }
-    if (item.type === "noul" && typeof item.criteria === "string") {
-      item.criteria = { true: item.criteria };
-    }
-    entries.push([id, item]);
+    return { ...request, questions: Object.fromEntries(entries) };
+  } catch {
+    // A hostile accessor or a Proxy that throws on the first read is left untouched for the admission schema to reject
+    // as a classified validation error, instead of escaping as a raw TypeError.
+    return value;
   }
-  return { ...request, questions: Object.fromEntries(entries) };
 }
 
 export interface PrepareEvaluationOptions {
@@ -160,8 +191,11 @@ export function assertWithinByteLimit(text: string, maxInputBytes: number): void
  * budget — always in that order. The Pi tool, the playground, and client.evaluate() all pass through here, so what one
  * accepts the others accept.
  */
-export function prepareEvaluationRequest(value: unknown, options: PrepareEvaluationOptions = {}): SystemOneRequest {
+export function prepareEvaluationRequest(value: unknown, options: PrepareEvaluationOptions | null = {}): SystemOneRequest {
+  // Run the JSON-safety gate before normalizing: normalize reads `questions` and destructures each question, which would
+  // execute a hostile accessor before parse had a chance to classify it.
+  assertJsonSafe(value);
   const validated = parseEvaluationRequest(normalizeEvaluationRequest(value));
-  assertWithinByteLimit(JSON.stringify(validated), options.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES);
+  assertWithinByteLimit(JSON.stringify(validated), options?.maxInputBytes ?? DEFAULT_MAX_INPUT_BYTES);
   return validated;
 }

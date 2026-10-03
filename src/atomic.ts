@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /**
@@ -11,9 +11,25 @@ import { dirname } from "node:path";
  */
 export function writeOwnerOnlyAtomic(path: string, contents: string): void {
   const temporary = `${path}.${process.pid}.tmp`;
+  // O_CREAT|O_EXCL refuses any pre-existing entry and O_NOFOLLOW refuses to follow a symlink, so a link planted at the
+  // temp path can never redirect the write, the chmod, or the rename to another file.
+  const exclusive = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
+  const writeTemporary = (): void => {
+    const descriptor = openSync(temporary, exclusive, 0o600);
+    try { writeFileSync(descriptor, contents); } finally { closeSync(descriptor); }
+  };
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(temporary, contents, { mode: 0o600, flag: "w" });
+    try {
+      writeTemporary();
+    } catch (error) {
+      // A leftover temp from a crashed process that reused this pid is ours to replace. Unlinking a symlink removes the
+      // link (never its target), and the exclusive retry still refuses a link planted between the two calls.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "ELOOP") throw error;
+      rmSync(temporary, { force: true });
+      writeTemporary();
+    }
     chmodSync(temporary, 0o600);
     renameSync(temporary, path);
   } catch (error) {

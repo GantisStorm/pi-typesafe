@@ -116,6 +116,15 @@ test("an unreadable selection is a classified rejection that never leaks the res
   });
 });
 
+test("a classified file-read rejection keeps the raw filesystem error as cause", async () => {
+  await workspace(async root => {
+    await assert.rejects(readJudgmentFiles(root, ["missing.ts"]), (error: unknown) => {
+      if (!(error instanceof TypeSafeIntegrationError) || error.code !== "validation") return false;
+      return (error.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
+    });
+  });
+});
+
 test("the file tool admits the near-miss aliases Pi's own validation would reject", () => {
   let definition = { execute: async (..._args: unknown[]): Promise<unknown> => { throw new Error("not registered"); }, prepareArguments: undefined as ((args: unknown) => unknown) | undefined };
   const pi = { registerTool(value: typeof definition) { definition = value; } } as unknown as ExtensionAPI;

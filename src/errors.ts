@@ -14,8 +14,9 @@ export class TypeSafeIntegrationError extends Error {
     readonly code: IntegrationErrorCode,
     message: string,
     readonly status?: number,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 

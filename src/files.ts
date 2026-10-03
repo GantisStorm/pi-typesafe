@@ -56,9 +56,10 @@ export async function readJudgmentFiles(cwd: string, paths: readonly string[], s
       handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch (error) {
       // A caller's path mistake (missing, a directory, unreadable) is a classified rejection, never a raw filesystem
-      // error: the tool contract promises a safe message, and a raw one carries the resolved absolute path.
+      // error: the tool contract promises a safe message, and a raw one carries the resolved absolute path. The original
+      // error rides along as `cause` so an adapter (harness-parity) can still name the specific reason by errno.
       if (error instanceof TypeSafeIntegrationError) throw error;
-      throw new TypeSafeIntegrationError("validation", "A selected file could not be read; check that it exists and is readable.");
+      throw new TypeSafeIntegrationError("validation", "A selected file could not be read; check that it exists and is readable.", undefined, { cause: error });
     }
     try {
       const stat = await handle.stat();

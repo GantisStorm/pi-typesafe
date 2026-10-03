@@ -81,11 +81,11 @@ request/spend limits cannot be bypassed by choosing another tool.
 
 ## Batching
 
-`evaluate` is one request: up to 32 questions about one state. Both batching calls preserve input order, bound concurrency (`concurrency`, default 4), never throw, and stop submitting once a `budget` or cancellation failure appears.
+`evaluate` is one request: up to 20 questions about one state. Both batching calls preserve input order, bound concurrency (`concurrency`, default 4), never throw, and stop submitting once a `budget` or cancellation failure appears.
 
 | Call | Use |
 | --- | --- |
-| `evaluateAll(request)` | One state, any number of questions: chunks over 32 share the state, then merge into one `answers` map with usage summed |
+| `evaluateAll(request)` | One state, any number of questions: chunks over 20 share the state, then merge into one `answers` map with usage summed |
 | `evaluateMany(requests)` | Several requests: per-request results plus merged answers, `failures`, `skipped` |
 | `chunkEvaluationRequest(request, { maxQuestions })` | The splitter alone; a pure function, no validation |
 | `fanOut(items, worker, { concurrency, signal, stopOn })` | The pool underneath, for your own work |

@@ -27,6 +27,9 @@
 
 ### Changed
 
+- The fork's per-request ceiling is 20 questions (`DEFAULT_MAX_QUESTIONS`), matching the shared harness ceiling
+  (`~/.bb/jev` and the harness-parity adapter) instead of upstream's 32, so the tool, the chunker, and every adapter
+  split at one size. The README, the API reference, and the `usage` string now state 20.
 - The owner-only atomic write (mkdir 0700, temp file, chmod 0600, rename, and
   best-effort cleanup) now lives once in `src/atomic.ts` instead of being written
   out in `auth.ts`, `credentials.ts`, and `usage.ts`. Internal only: no export
@@ -34,6 +37,13 @@
 
 ### Fixed
 
+- **Atomic owner-only writes:** the temporary file is opened `O_CREAT|O_EXCL|O_NOFOLLOW`, so a symlink planted at the
+  temp path is refused instead of followed (the write and chmod can no longer land on another file); a stale temp left by
+  a crashed process that reused the pid is removed and retried.
+- **Admission:** a hostile accessor or a Proxy whose `[[Get]]` throws is a classified `validation` rejection instead of a
+  raw `TypeError`, and `prepareEvaluationRequest(value, null)` treats a null options argument as defaults.
+- **Schema limits:** question ids (1–100) and Choice labels (1–200) are enforced again through `propertyNames`;
+  `Type.Record` had compiled its key schema away, so `Check` admitted empty and over-long keys.
 - **Guarded file admission:** an absent, unreadable, or non-file selection is a
   classified `validation` rejection instead of a raw filesystem error that carried
   the resolved absolute path; two spellings of one path on a case-insensitive

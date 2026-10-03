@@ -42,7 +42,7 @@ repeating those questions against `state.file.content`, `state.file.path`, and
 `state.task`. Only per-file judgments, probabilities, usage, and errors return
 to the main model; file contents are not included in results.
 
-Limits: 8 selected files, 16 KiB of UTF-8 per file, 32 questions per file,
+Limits: 8 selected files, 16 KiB of UTF-8 per file, 20 questions per file,
 concurrency 3. Both tools share the same client and request/spend limits.
 Use glob/grep/LSP to shortlist candidates first. There is no glob expansion,
 whole-repo scan, command execution, silent truncation, or generative summary.
@@ -119,7 +119,7 @@ Read probabilities and confidence alongside the answer. Confidence describes how
 
 `typesafe_evaluate` is registered at startup but **disabled until you run `/typesafe enable`** in the session. For automated or headless runs, set `PI_TYPESAFE_ENABLED=1` explicitly.
 
-The tool accepts JSON `state` plus 1 to 32 questions and returns answers, model, token usage, and elapsed time. Good uses: triaging a list of issues in one call, deciding which of several files a change belongs to, checking whether a reply answers the question that was asked, scoring candidates against a rubric you wrote. Bad uses: anything that needs reasoning across steps, or a single question that mixes several judgments.
+The tool accepts JSON `state` plus 1 to 20 questions and returns answers, model, token usage, and elapsed time. Good uses: triaging a list of issues in one call, deciding which of several files a change belongs to, checking whether a reply answers the question that was asked, scoring candidates against a rubric you wrote. Bad uses: anything that needs reasoning across steps, or a single question that mixes several judgments.
 
 ## Writing questions that work
 
@@ -149,7 +149,7 @@ An enabled extension with no usable key looks exactly like a working one — one
 
 The environment may lower an explicit cap but never raise it. A reached cap raises a `budget` error naming the cap, the amount used, and the day.
 
-Need more than one request? `evaluateAll(request)` asks any number of questions about one state (over 32 are chunked and fanned out), and `evaluateMany(requests)` runs several requests at once. Both preserve order, bound concurrency, never throw, and stop submitting once the budget is gone. [`pi-typesafe/calibrate`](docs/api.md#calibration-pi-typesafecalibrate) turns labelled cases into thresholds with AUC, a sweep, and a replay runner.
+Need more than one request? `evaluateAll(request)` asks any number of questions about one state (over 20 are chunked and fanned out), and `evaluateMany(requests)` runs several requests at once. Both preserve order, bound concurrency, never throw, and stop submitting once the budget is gone. [`pi-typesafe/calibrate`](docs/api.md#calibration-pi-typesafecalibrate) turns labelled cases into thresholds with AUC, a sweep, and a replay runner.
 
 ## Commands
 
@@ -181,7 +181,7 @@ The main model can answer any of these questions in prose. It is slower, costs m
 Only the state and questions you (or the agent, once enabled) submit, to `https://api.typesafe.ai` only. No files, conversation history, or telemetry. Error messages never include upstream response bodies, headers, keys, or your submitted state.
 
 **Limits?**
-Per request: 32 questions and 64 KiB of JSON. Per session: 20 attempts, 15-second timeout, no automatic retries. Per day: no cap unless you set one. Session limits reset when a session starts or reloads; daily counters live in `~/.pi/agent/pi-typesafe/usage.json` and roll over at local midnight. The SDK's `TYPESAFE_BASE_URL` and `TYPESAFE_LOG_LEVEL` overrides are ignored.
+Per request: 20 questions and 64 KiB of JSON. Per session: 20 attempts, 15-second timeout, no automatic retries. Per day: no cap unless you set one. Session limits reset when a session starts or reloads; daily counters live in `~/.pi/agent/pi-typesafe/usage.json` and roll over at local midnight. The SDK's `TYPESAFE_BASE_URL` and `TYPESAFE_LOG_LEVEL` overrides are ignored.
 
 ## For extension authors
 
