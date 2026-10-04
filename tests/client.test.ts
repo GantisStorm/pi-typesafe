@@ -530,3 +530,24 @@ test("a non-string apiKey is a configuration error, not a TypeError", () => {
     assert.throws(() => createTypeSafe({ apiKey: apiKey as never }), hasCode("configuration"));
   }
 });
+
+test("a score answer at the top of the rubric is accepted, and one above it is not", async () => {
+  const questions = { severity: score("How severe?", ["Low", "Medium", "High"]) };
+  const wire = (position: number) => Response.json({
+    model: "jev-test",
+    answers: { severity: { type: "score", score: position, confidence: 1, legend: { 0: "Low", 1: "Medium", 2: "High" }, probabilities: { 0: position === 0 ? 1 : 0, 1: position === 1 ? 1 : 0, 2: position === 2 ? 1 : 0 } } },
+    usage: { input_tokens: 5, output_tokens: 0 },
+  });
+  const clientAt = (position: number) => createTypeSafe({ apiKey: "test-key", fetch: async () => wire(position) });
+  // The last level is a legitimate answer; an off-by-one that rejected it would silently drop real scores.
+  assert.equal((await clientAt(2).evaluate({ state: "synthetic", questions })).answers.severity.score, 2);
+  await assert.rejects(clientAt(3).evaluate({ state: "synthetic", questions }), hasCode("response"));
+});
+
+test("a negative token count is a response error, not a silent success", async () => {
+  for (const usage of [{ input_tokens: -1, output_tokens: 0 }, { input_tokens: 5, output_tokens: -1 }]) {
+    const client = createTypeSafe({ apiKey: "test-key", fetch: async () => Response.json({ model: "jev-test", answers: { yes: { type: "noul", noul: 0.9 } }, usage }) });
+    await assert.rejects(client.evaluate(sample()), hasCode("response"));
+    assert.equal(client.getUsage().requestsSucceeded, 0);
+  }
+});

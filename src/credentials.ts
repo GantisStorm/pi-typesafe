@@ -1,7 +1,7 @@
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { writeOwnerOnlyAtomic } from "./atomic.js";
+import { readRegularFile, writeOwnerOnlyAtomic } from "./atomic.js";
 import { DEFAULT_BACKEND, TYPESAFE_KEY_ENV, resolveBackend, usesTypesafeKey } from "./backends.js";
 import type { BackendSpec } from "./backends.js";
 import { TypeSafeIntegrationError } from "./errors.js";
@@ -44,7 +44,8 @@ export function normalizeApiKey(value: unknown): string {
 
 /**
  * The stored key, or `undefined` when the file is missing, unreadable, or holds no usable value. Throws
- * `configuration` when the file is readable by other users; keySituation() reports that case as `unusable` instead.
+ * `configuration` when the file is readable by other users or is not a regular file (a FIFO or device would otherwise
+ * block the read); keySituation() reports either case as `unusable` instead.
  */
 export function readStoredApiKey(): string | undefined {
   const path = credentialsPath();
@@ -53,7 +54,7 @@ export function readStoredApiKey(): string | undefined {
       // Refuse to use a key other local users can read; the user must fix permissions or log in again.
       throw new TypeSafeIntegrationError("configuration", `Refusing to read ${path}: it is readable by other users. Run chmod 600 on it, or run /typesafe logout and /typesafe login.`);
     }
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const parsed: unknown = JSON.parse(readRegularFile(path));
     const key = parsed && typeof parsed === "object" ? (parsed as { apiKey?: unknown }).apiKey : undefined;
     return typeof key === "string" && key.trim() ? key.trim() : undefined;
   } catch (error) {

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { clearStoredApiKey, credentialsPath, keySituation, keySourceLabel, normalizeApiKey, readStoredApiKey, resolveApiKey, storeApiKey } from "../src/credentials.js";
 import { createTypeSafe, TypeSafeIntegrationError } from "../src/index.js";
@@ -200,4 +201,42 @@ test("a key store in an unwritable directory is a classified error that leaves t
   storeApiKey(replacement);
   assert.equal(readStoredApiKey(), replacement);
   assert.equal(statSync(credentialsPath()).mode & 0o777, 0o600);
+});
+
+test("the key-length boundary is enforced before anything is saved", () => {
+  const rejected = (error: unknown) => error instanceof TypeSafeIntegrationError && error.code === "validation";
+  assert.throws(() => storeApiKey("k".repeat(15)), rejected);
+  assert.equal(readStoredApiKey(), undefined, "a rejected key must not be written");
+  assert.equal(storeApiKey("k".repeat(16)), credentialsPath());
+  assert.equal(readStoredApiKey(), "k".repeat(16));
+  assert.equal(storeApiKey("k".repeat(512)), credentialsPath());
+  assert.throws(() => storeApiKey("k".repeat(513)), rejected);
+  assert.equal(readStoredApiKey(), "k".repeat(512), "a rejected key must leave the stored one whole");
+});
+
+test("a writer-less FIFO at the key path is refused instead of blocking", { skip: process.platform === "win32" }, () => {
+  mkdirSync(join(agentDir, "pi-typesafe"), { recursive: true, mode: 0o700 });
+  const path = credentialsPath();
+  const made = spawnSync("mkfifo", [path], { encoding: "utf8" });
+  assert.equal(made.status, 0, made.stderr || "mkfifo is required for this test");
+  // Owner-only so the mode check passes and the read itself is what must refuse the FIFO. Opening it blocks forever, so
+  // the read runs in a child process whose timeout bounds it: a regression shows up as a killed process instead of a
+  // hung suite. The child needs `await import` rather than a static import because its specifier is resolved at run
+  // time inside the spawned script, and the agent directory is set there too, after the module reads its own default.
+  chmodSync(path, 0o600);
+  try {
+    const source = `process.env.PI_CODING_AGENT_DIR = ${JSON.stringify(agentDir)};
+const { readStoredApiKey } = await import(${JSON.stringify(resolve("src/credentials.ts"))});
+try { process.stdout.write("key:" + String(readStoredApiKey())); }
+catch (error) { process.stdout.write("refused:" + error.code + ":" + error.message); }`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], {
+      cwd: process.cwd(),
+      timeout: 20_000,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || `the read did not return (signal ${result.signal})`);
+    assert.match(String(result.stdout), /^refused:configuration:.*not a regular file/);
+  } finally {
+    rmSync(path, { force: true });
+  }
 });

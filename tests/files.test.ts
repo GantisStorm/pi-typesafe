@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { readJudgmentFiles, registerFileEvaluation } from "../src/files.js";
 import { TypeSafeIntegrationError } from "../src/errors.js";
@@ -164,5 +165,65 @@ test("one file under two spellings is still a duplicate", { skip: !caseInsensiti
   await workspace(async root => {
     await writeFile(join(root, "src.ts"), "export const a = 1;\n");
     await assert.rejects(readJudgmentFiles(root, ["src.ts", "SRC.TS"]), /Duplicate/);
+  });
+});
+
+test("a completed file judgment reports per-file results, usage, and no raw error text", async () => {
+  await workspace(async root => {
+    await writeFile(join(root, "a.ts"), "export const a = 1;\n");
+    await writeFile(join(root, "b.ts"), "export const b = 2;\n");
+    let execute: (...args: unknown[]) => Promise<unknown> = async () => { throw new Error("not registered"); };
+    const pi = { registerTool(definition: { execute: typeof execute }) { execute = definition.execute; } } as unknown as ExtensionAPI;
+    const submitted: string[] = [];
+    const client = {
+      async evaluateMany(requests: Array<{ state: { file: { path: string } } }>) {
+        for (const request of requests) submitted.push(request.state.file.path);
+        return {
+          ok: false,
+          results: requests.map((_request, index) => index === 1
+            ? { ok: false, index, error: new Error("upstream body that must not escape"), skipped: false }
+            : { ok: true, index, value: { model: "jev-test", answers: { relevant: { type: "noul", noul: 0.75 } }, usage: { input_tokens: 3, output_tokens: 0 }, elapsedMs: 1 } }),
+          usage: { input_tokens: 3, output_tokens: 0 },
+          elapsedMs: 2,
+        };
+      },
+    } as unknown as TypeSafe;
+    registerFileEvaluation(pi, { enabled: () => true, client: () => client, host: "api.example.com" });
+    const params = { paths: ["a.ts", "b.ts"], questions: { relevant: { type: "noul", instructions: "Is state.file.content relevant?" } } };
+    // The stub sees the registered tool's own return value; the shape under test is the JSON a consumer reads.
+    const { content, details } = await execute("id", params, undefined, undefined, { cwd: root }) as {
+      content: Array<{ text: string }>;
+      details: { ok: boolean; files: Array<{ path: string; ok: boolean; error?: string; model?: string }>; usage: { input_tokens: number }; elapsedMs: number };
+    };
+    assert.deepEqual(submitted, ["a.ts", "b.ts"], "one request per file, in input order");
+    assert.equal(details.ok, false);
+    assert.deepEqual(details.files.map(file => file.path), ["a.ts", "b.ts"]);
+    assert.equal(details.files[0]?.model, "jev-test");
+    assert.equal(details.files[1]?.error, "TypeSafe returned an unreadable or unexpected response.");
+    assert.equal(details.usage.input_tokens, 3);
+    const rendered = content[0]?.text ?? "";
+    assert.ok(rendered.includes("jev-test"), "a completed judgment reports its answers");
+    assert.equal(rendered.includes("upstream body that must not escape"), false, "a failed file uses safeError, never the raw error");
+  });
+});
+
+test("a writer-less FIFO is refused instead of blocking the read", { skip: process.platform === "win32" }, async () => {
+  await workspace(async root => {
+    const made = spawnSync("mkfifo", [join(root, "pipe.ts")], { encoding: "utf8" });
+    assert.equal(made.status, 0, made.stderr || "mkfifo is required for this test");
+    // Opening a writer-less FIFO blocks forever, so the read runs in a child process whose timeout bounds it: a
+    // regression shows up as a killed process instead of a hung suite. The child needs `await import` rather than a
+    // static import because its specifier is resolved at run time inside the spawned script.
+    const source = `const { readJudgmentFiles } = await import(${JSON.stringify(resolve("src/files.ts"))});
+try { await readJudgmentFiles(${JSON.stringify(root)}, ["pipe.ts"]); process.stdout.write("resolved"); }
+catch (error) { process.stdout.write("refused:" + error.code + ":" + error.message); }`;
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], {
+      cwd: process.cwd(),
+      timeout: 20_000,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr || `the read did not return (signal ${result.signal})`);
+    // The refusal names the FIFO case, which pins the pre-open type check rather than the descriptor's own stat.
+    assert.match(String(result.stdout), /^refused:validation:.*cannot be judged/);
   });
 });

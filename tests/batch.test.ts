@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { chunkEvaluationRequest, fanOut } from "../src/batch.js";
 import { createTypeSafe } from "../src/client.js";
@@ -198,4 +199,33 @@ test("a stop rule that throws cannot reject the pool", async () => {
   assert.equal(results[0]?.ok, false);
   // The rule could not be evaluated, so the rest is not launched: a stop rule exists to guard further spending.
   assert.deepEqual(results.map(result => !result.ok && result.skipped), [false, true, true]);
+});
+
+test("a failure that is not a budget or cancellation stops nothing", async () => {
+  const counter = { calls: 0 };
+  const client = createTypeSafe({ ledger: ledgerFor("continue"), fetch: answeringFetch(counter) });
+  // The first request is rejected at admission; the two valid ones must still be submitted, in order.
+  const requests: SystemOneRequest<Questions>[] = [{ state: "synthetic", questions: {} }, sample, sample];
+  const batch = await client.evaluateMany(requests, { concurrency: 1 });
+  assert.equal(counter.calls, 2, "a validation failure must not stop the remaining requests");
+  assert.equal(batch.failures, 1);
+  assert.equal(batch.skipped, 0);
+  assert.deepEqual(batch.results.map(result => result.ok), [false, true, true]);
+});
+
+test("a degenerate question limit is clamped instead of looping forever", () => {
+  // A limit below 1 would advance the chunk loop by zero and never terminate, so the splitter floors it at 1. The call
+  // runs in a fresh process because a regression there would hang this one; the timeout bounds that failure. The child
+  // needs `await import` rather than a static import: its specifier is resolved at run time inside the spawned script,
+  // which a static import in this file cannot reach into.
+  const source = `const { chunkEvaluationRequest } = await import(${JSON.stringify(resolve("src/batch.ts"))});
+const questions = Object.fromEntries(Array.from({ length: 3 }, (_value, index) => ["q" + index, { type: "noul" }]));
+process.stdout.write(JSON.stringify(chunkEvaluationRequest({ state: "s", questions }, { maxQuestions: 0 }).map(chunk => Object.keys(chunk.questions).length)));`;
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], {
+    cwd: process.cwd(),
+    timeout: 30_000,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || `the splitter did not terminate (signal ${result.signal})`);
+  assert.deepEqual(JSON.parse(result.stdout), [1, 1, 1]);
 });

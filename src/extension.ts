@@ -199,9 +199,9 @@ export default function typesafeExtension(pi: ExtensionAPI): void {
           return;
         }
         if (action === "setup") {
-          const current = situation.kind === "environment" || situation.kind === "stored" ? `configured via ${keySourceLabel(situation)}`
-            : situation.kind === "unusable" ? `unusable — ${situation.reason}`
-            : "missing";
+          // A missing key never reaches here: the branch above sends `setup` to the login flow. Only a configured or
+          // unusable store can, so this names those two.
+          const current = situation.kind === "unusable" ? `unusable — ${situation.reason}` : `configured via ${keySourceLabel(situation)}`;
           report(`Key ${current}. Run /typesafe test for one sample request or /typesafe enable to allow agent tool calls.`);
           return;
         }

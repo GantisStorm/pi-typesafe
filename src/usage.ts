@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeOwnerOnlyAtomic } from "./atomic.js";
+import { readRegularFile, writeOwnerOnlyAtomic } from "./atomic.js";
 import { piTypesafeDir } from "./credentials.js";
 
 /**
@@ -75,6 +74,28 @@ export function emptyTotals(): UsageTotals {
   return { requestsStarted: 0, requestsSucceeded: 0, requestsFailed: 0, inputTokens: 0, outputTokens: 0 };
 }
 
+function sumTotals(a: UsageTotals, b: UsageTotals): UsageTotals {
+  return {
+    requestsStarted: a.requestsStarted + b.requestsStarted,
+    requestsSucceeded: a.requestsSucceeded + b.requestsSucceeded,
+    requestsFailed: a.requestsFailed + b.requestsFailed,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+  };
+}
+
+/**
+ * ponytail: deltas land on a freshly read file, so every live process keeps its own increments instead of overwriting
+ * the others' with a whole in-memory map. Two processes whose read-modify-write windows interleave can still lose a
+ * single increment, and the daily caps stay per-process by design; a lockfile is deliberately not worth it for a
+ * best-effort spend ledger.
+ */
+function mergeDeltas(base: Record<string, UsageTotals>, deltas: Record<string, UsageTotals>): Record<string, UsageTotals> {
+  const result: Record<string, UsageTotals> = { ...base };
+  for (const [name, delta] of Object.entries(deltas)) result[name] = sumTotals(result[name] ?? emptyTotals(), delta);
+  return result;
+}
+
 function count(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
@@ -92,7 +113,7 @@ function totalsOf(value: unknown): UsageTotals {
 
 function readDays(path: string): Record<string, UsageTotals> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const parsed: unknown = JSON.parse(readRegularFile(path));
     const days = parsed && typeof parsed === "object" ? (parsed as { days?: unknown }).days : undefined;
     if (!days || typeof days !== "object" || Array.isArray(days)) return {};
     const result: Record<string, UsageTotals> = {};
@@ -115,12 +136,14 @@ function keepRecent(days: Record<string, UsageTotals>, today: string): Record<st
 }
 
 /** Owner-only, atomic, and best-effort: a ledger this process cannot write never fails a request. */
-function writeDays(path: string, days: Record<string, UsageTotals>): void {
+function writeDays(path: string, days: Record<string, UsageTotals>): boolean {
   const file: LedgerFile = { version: USAGE_VERSION, days };
   try {
     writeOwnerOnlyAtomic(path, `${JSON.stringify(file, null, 2)}\n`);
+    return true;
   } catch {
     // Best-effort only; a ledger this process cannot write never fails a request.
+    return false;
   }
 }
 
@@ -193,6 +216,9 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
   let day = localDay(now());
   let days = keepRecent(readDays(path), day);
   let totals = days[day] as UsageTotals;
+  // This process's increments since its last successful write, keyed by the day they belong to. Merged onto a fresh
+  // read of the file and cleared by a successful write, so another process's increments are never overwritten.
+  let pending: Record<string, UsageTotals> = {};
 
   const report = (value: UsageTotals, name: string): UsageReport => ({
     ...value, day: name, estimatedUsd: estimateUsd(value.inputTokens, usdPerMTok),
@@ -200,7 +226,7 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
 
   const save = () => {
     days = keepRecent({ ...days, [day]: totals }, day);
-    writeDays(path, days);
+    if (writeDays(path, keepRecent(mergeDeltas(readDays(path), pending), day))) pending = {};
   };
 
   const roll = () => {
@@ -213,13 +239,15 @@ export function openUsageLedger(options: UsageLedgerOptions = {}): UsageLedger {
 
   const add = (delta: Partial<UsageTotals>) => {
     roll();
-    totals = {
-      requestsStarted: totals.requestsStarted + (delta.requestsStarted ?? 0),
-      requestsSucceeded: totals.requestsSucceeded + (delta.requestsSucceeded ?? 0),
-      requestsFailed: totals.requestsFailed + (delta.requestsFailed ?? 0),
-      inputTokens: totals.inputTokens + (delta.inputTokens ?? 0),
-      outputTokens: totals.outputTokens + (delta.outputTokens ?? 0),
+    const step: UsageTotals = {
+      requestsStarted: count(delta.requestsStarted),
+      requestsSucceeded: count(delta.requestsSucceeded),
+      requestsFailed: count(delta.requestsFailed),
+      inputTokens: count(delta.inputTokens),
+      outputTokens: count(delta.outputTokens),
     };
+    totals = sumTotals(totals, step);
+    pending[day] = sumTotals(pending[day] ?? emptyTotals(), step);
     save();
   };
 

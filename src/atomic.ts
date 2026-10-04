@@ -1,5 +1,6 @@
-import { chmodSync, closeSync, constants, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { TypeSafeIntegrationError } from "./errors.js";
 
 /**
  * Replace `path` with `contents` in one step: a same-directory temporary file written owner-only, then a rename that
@@ -35,5 +36,25 @@ export function writeOwnerOnlyAtomic(path: string, contents: string): void {
   } catch (error) {
     try { rmSync(temporary, { force: true }); } catch { /* best-effort cleanup only */ }
     throw error;
+  }
+}
+
+/**
+ * Read a small record without ever blocking: the open is non-blocking and the descriptor's own stat refuses anything
+ * that is not a regular file (FIFO, socket, device, directory) before a single byte is read, so a planted path cannot
+ * stall the key store, the auth record, or the usage ledger. Symlinks are still followed, so a store managed from a
+ * dotfiles directory keeps working.
+ *
+ * Internal: not re-exported from index.ts.
+ */
+export function readRegularFile(path: string): string {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new TypeSafeIntegrationError("configuration", `Refusing to read ${path}: it is not a regular file.`);
+    }
+    return readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
   }
 }

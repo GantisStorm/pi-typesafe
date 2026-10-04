@@ -1,6 +1,6 @@
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { writeOwnerOnlyAtomic } from "./atomic.js";
+import { readRegularFile, writeOwnerOnlyAtomic } from "./atomic.js";
 import { DEFAULT_BACKEND, TYPESAFE_KEY_ENV, resolveBackend, usesTypesafeKey } from "./backends.js";
 import type { BackendSpec } from "./backends.js";
 import { credentialsPath, keySituation, keySourceLabel, piTypesafeDir } from "./credentials.js";
@@ -59,7 +59,7 @@ export function authStatePath(): string {
 
 function readState(path: string): { verifiedAt?: string; lastFailure?: AuthFailure } {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const parsed: unknown = JSON.parse(readRegularFile(path));
     if (!parsed || typeof parsed !== "object") return {};
     const raw = parsed as { verifiedAt?: unknown; lastFailure?: unknown };
     const verifiedAt = typeof raw.verifiedAt === "string" && raw.verifiedAt.length <= 40 ? raw.verifiedAt : undefined;

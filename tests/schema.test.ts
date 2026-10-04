@@ -132,3 +132,24 @@ test("a hostile accessor or a Proxy whose [[Get]] throws is a classified validat
 test("a null options argument is treated as defaults", () => {
   assert.doesNotThrow(() => prepareEvaluationRequest({ state: "s", questions: { q: { type: "noul", instructions: "?" } } }, null));
 });
+
+test("choice option counts and score level counts keep their declared ceilings", () => {
+  const choiceWith = (count: number) => ({
+    state: "s",
+    questions: { q: { type: "choice", instructions: "?", criteria: Object.fromEntries(Array.from({ length: count }, (_value, index) => [`L${index}`, null])) } },
+  });
+  const scoreWith = (count: number) => ({
+    state: "s",
+    questions: { q: { type: "score", instructions: "?", criteria: Array.from({ length: count }, (_value, index) => `L${index}`) } },
+  });
+  // Choice: 1–64 options; a no-match option is one of them, so 64 is the ceiling and 65 must not slip through.
+  assert.throws(() => parseEvaluationRequest(choiceWith(0)), hasCode("validation"));
+  assert.doesNotThrow(() => prepareEvaluationRequest(choiceWith(1)));
+  assert.doesNotThrow(() => prepareEvaluationRequest(choiceWith(64)));
+  assert.throws(() => parseEvaluationRequest(choiceWith(65)), hasCode("validation"));
+  // Score: 2–32 ordered levels.
+  assert.throws(() => parseEvaluationRequest(scoreWith(1)), hasCode("validation"));
+  assert.doesNotThrow(() => prepareEvaluationRequest(scoreWith(2)));
+  assert.doesNotThrow(() => prepareEvaluationRequest(scoreWith(32)));
+  assert.throws(() => parseEvaluationRequest(scoreWith(33)), hasCode("validation"));
+});

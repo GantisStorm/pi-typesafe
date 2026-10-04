@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -134,4 +134,88 @@ test("an unwritable ledger directory is tolerated, and the last complete file su
   openUsageLedger({ path, now: at.bind(null, 9) }).recordStart();
   assert.equal(openUsageLedger({ path, now: at.bind(null, 9) }).today().requestsStarted, 2);
   assert.equal(statSync(path).mode & 0o777, 0o600);
+});
+
+test("two processes over one path both keep their increments", () => {
+  const path = ledgerPath("two-processes");
+  // Both open the same (empty) file before either writes, which is the shape a clobbering writer loses to.
+  const first = openUsageLedger({ path, now: at.bind(null, 10) });
+  const second = openUsageLedger({ path, now: at.bind(null, 10) });
+  first.recordStart();
+  first.recordSuccess(100, 5);
+  second.recordStart();
+  second.recordSuccess(7, 0);
+  const file = JSON.parse(readFileSync(path, "utf8"));
+  assert.deepEqual(file.days["2026-01-10"], { requestsStarted: 2, requestsSucceeded: 2, requestsFailed: 0, inputTokens: 107, outputTokens: 5 });
+});
+
+test("a rollover in one process keeps the other process's earlier day", () => {
+  const path = ledgerPath("two-process-rollover");
+  let day = 11;
+  const first = openUsageLedger({ path, now: at.bind(null, 11) });
+  const second = openUsageLedger({ path, now: () => at(day) });
+  first.recordStart();
+  first.recordSuccess(50, 0);
+  day = 12;
+  second.recordStart();
+  const file = JSON.parse(readFileSync(path, "utf8"));
+  assert.equal(file.days["2026-01-11"].requestsStarted, 1);
+  assert.equal(file.days["2026-01-11"].inputTokens, 50);
+  assert.equal(file.days["2026-01-12"].requestsStarted, 1);
+  // The clock moved on in one process only; the day that is no longer in its memory stays whole on disk.
+  second.recordSuccess(3, 0);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).days["2026-01-11"].inputTokens, 50);
+});
+
+test("a corrupt or missing ledger mid-life still records the pending deltas", () => {
+  const corruptPath = ledgerPath("mid-life-corrupt");
+  const corrupt = openUsageLedger({ path: corruptPath, now: at.bind(null, 13) });
+  writeFileSync(corruptPath, "{ not json");
+  corrupt.recordStart();
+  corrupt.recordSuccess(9, 2);
+  assert.deepEqual(JSON.parse(readFileSync(corruptPath, "utf8")).days["2026-01-13"],
+    { requestsStarted: 1, requestsSucceeded: 1, requestsFailed: 0, inputTokens: 9, outputTokens: 2 });
+
+  const missingPath = ledgerPath("mid-life-missing");
+  const missing = openUsageLedger({ path: missingPath, now: at.bind(null, 13) });
+  missing.recordStart();
+  rmSync(missingPath);
+  // The earlier increment lived only in the deleted file; what merges is this process's unmerged delta.
+  missing.recordSuccess(4, 0);
+  assert.deepEqual(JSON.parse(readFileSync(missingPath, "utf8")).days["2026-01-13"],
+    { requestsStarted: 0, requestsSucceeded: 1, requestsFailed: 0, inputTokens: 4, outputTokens: 0 });
+});
+
+test("a merge prunes to the newest kept days and keeps today present", () => {
+  const path = ledgerPath("prune");
+  const days: Record<string, unknown> = {};
+  for (let d = 1; d <= 40; d += 1) days[`2026-01-${String(d).padStart(2, "0")}`] = { requestsStarted: d };
+  writeFileSync(path, JSON.stringify({ version: 1, days }));
+  const ledger = openUsageLedger({ path, now: at.bind(null, 20) });
+  ledger.recordStart();
+  const written = JSON.parse(readFileSync(path, "utf8")).days;
+  const names = Object.keys(written).sort();
+  assert.equal(names.length, 31);
+  assert.equal(names[0], "2026-01-10");
+  assert.ok(names.includes("2026-01-20"));
+  // Day 20 already held 20 starts in the file; the delta added to it instead of replacing the day.
+  assert.equal(written["2026-01-20"].requestsStarted, 21);
+});
+
+test("one process's file stays identical to its in-memory totals", () => {
+  const path = ledgerPath("single-process");
+  const ledger = openUsageLedger({ path, now: at.bind(null, 14) });
+  ledger.recordStart();
+  ledger.recordSuccess(120, 8);
+  ledger.recordStart();
+  ledger.recordFailure(5, 1);
+  const today = ledger.today();
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")).days["2026-01-14"], {
+    requestsStarted: today.requestsStarted, requestsSucceeded: today.requestsSucceeded, requestsFailed: today.requestsFailed,
+    inputTokens: today.inputTokens, outputTokens: today.outputTokens,
+  });
+  assert.deepEqual(today, {
+    requestsStarted: 2, requestsSucceeded: 1, requestsFailed: 1, inputTokens: 125, outputTokens: 9,
+    day: "2026-01-14", estimatedUsd: estimateUsd(125, DEFAULT_USD_PER_MTOK),
+  });
 });

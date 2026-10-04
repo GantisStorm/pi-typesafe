@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Questions } from "@typesafe-ai/sdk";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { Type, type Static } from "typebox";
@@ -49,11 +49,17 @@ export async function readJudgmentFiles(cwd: string, paths: readonly string[], s
     let handle: FileHandle;
     try {
       let componentPath = root;
+      let leaf: Stats | undefined;
       for (const part of local.split(sep)) {
         componentPath = resolve(componentPath, part);
-        if ((await lstat(componentPath)).isSymbolicLink()) throw new TypeSafeIntegrationError("validation", "Symlink paths are not permitted for file judgments.");
+        leaf = await lstat(componentPath);
+        if (leaf.isSymbolicLink()) throw new TypeSafeIntegrationError("validation", "Symlink paths are not permitted for file judgments.");
       }
-      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      // A FIFO, socket, or device that the walk already stat'd would block or misbehave inside open() before the
+      // descriptor's own stat could reject it, so the type check happens here; O_NONBLOCK keeps a file swapped in
+      // between this stat and the open from blocking either.
+      if (!leaf?.isFile()) throw new TypeSafeIntegrationError("validation", "Select a regular source file; a FIFO, socket, or device cannot be judged.");
+      handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     } catch (error) {
       // A caller's path mistake (missing, a directory, unreadable) is a classified rejection, never a raw filesystem
       // error: the tool contract promises a safe message, and a raw one carries the resolved absolute path. The original
